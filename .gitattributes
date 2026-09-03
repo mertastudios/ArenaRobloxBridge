@@ -1,5 +1,14 @@
-# Windows-Starter muessen CRLF behalten, sonst startet cmd.exe sie nicht sauber.
-*.cmd text eol=crlf
-*.bat text eol=crlf
-*.vbs text eol=crlf
-*.ps1 text eol=crlf
+# Windows-Starter muessen CRLF behalten, sonst startet cmd.exe sie nicht sauber
+# (insbesondere goto-Labels in Batch-Dateien sind mit LF-Zeilenenden unzuverlaessig).
+#
+# -text (statt text eol=crlf): Die Dateien werden UNVERAENDERT - also mit CRLF -
+# im Repository gespeichert. Grund: Das Auto-Update und der manuelle Download
+# liefern das GitHub-ZIP des main-Zweigs, und dort steht exakt das, was im
+# Repository gespeichert ist. Mit "text eol=crlf" waeren die ZIP-Dateien
+# LF-normalisiert gewesen (Working Tree CRLF, Repository/ZIP LF) - der per
+# Update verteilte "OPEN ME TO START.cmd" haette cmd.exe dann ggf. nicht mehr
+# sauber ausgefuehrt.
+*.cmd -text
+*.bat -text
+*.vbs -text
+*.ps1 -text

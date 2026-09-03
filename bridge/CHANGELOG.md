@@ -1,8 +1,73 @@
 # Changelog
 
 Alle wesentlichen Aenderungen an **Arena Roblox Bridge**. Das Programm
-aktualisiert sich selbst aus diesem Repository (siehe `version.json` - die
-dortige `notes`-Liste erscheint in der Update-Benachrichtigung).
+aktualisiert sich selbst aus diesem Repository (siehe `bridge/version.json` -
+die dortige `notes`-Liste erscheint in der Update-Benachrichtigung).
+
+## [3.3.5] - 2026-09-03
+
+### Behoben - Auto-Update fand nie ein Update
+- **Symptom:** Die integrierte Update-Suche meldete dauerhaft "Keine Verbindung
+  zu GitHub" bzw. zeigte nie eine Update-Benachrichtigung; Updates mussten
+  manuell als ZIP von GitHub heruntergeladen werden.
+- **Ursache 1 (falsche URL):** `$script:UpdateInfoUrl` zeigte auf
+  `.../main/version.json` - die Datei liegt im Repository aber unter
+  `bridge/version.json`. GitHub antwortete auf die falsche Adresse mit 404,
+  also wurde nie ein Update gefunden.
+- **Ursache 2 (falsche Staging-Verifikation):** Nach dem Download des Repo-ZIPs
+  wurde `version.json` im Stamm des entpackten Archivs geprueft - im ZIP liegt
+  sie unter `bridge\`. Die Verifikung schlug deshalb immer fehl; selbst ein
+  erfolgreich heruntergeladenes Update waere nie als gueltig erkannt und
+  angewendet worden.
+- **Fix:** Update-URL auf `main/bridge/version.json` korrigiert; die
+  Verifikation (und der Marker in `Get-StagedVersionDir`) prueft jetzt
+  `bridge\version.json` mit Rueckfall auf den Stamm.
+- **Kompatibilitaet:** Im Repository-Stamm liegt jetzt eine Kopierversion
+  `version.json`. Grund: Bereits installierte 3.3.3-Versionen fragen mit ihrer
+  alten (falschen) URL genau diese Stamm-Datei ab - mit der Kopie finden auch
+  sie das Update und stagen es erfolgreich (deren Verifikation prueft den
+  Stamm, den das ZIP durch die Kopie jetzt ebenfalls enthaelt). Lokal wird die
+  Stamm-Kopie nie gelesen (es gilt immer `bridge\version.json`).
+
+### Behoben - Fehler-Toast "... Methode ... NULL" beim Start
+- **Symptom:** Kurz nach dem Start erschien der Toast "Fehler abgefangen: Es
+  ist nicht moeglich, eine Methode fuer einen Ausdruck aufzurufen, der den
+  NULL hat."
+- **Ursache:** Der Auto-Update-Start-Timer rief in seinem `Add_Tick`-Handler
+  `$delay.Stop()` auf. Lokale Variablen sind in PowerShell-Event-Handlern
+  nicht sichtbar (keine Closure) - `$delay` war im Handler NULL, die Zeile
+  warf die gemeldete Ausnahme und `Start-AutoUpdateFlow` lief folglich nie.
+  Der Code kennt diese Falle (Kommentar bei den Toast-Timern) - vier Stellen
+  hatten sie trotzdem missachtet.
+- **Fix (4 Stellen):** Auto-Update-Start-Timer, "Jetzt nach Updates suchen"-
+  Button und Autostart-Checkbox arbeiten jetzt mit dem Sender (`param($s, $e)`
+  bzw. `$s.Tag`), die Update-Benachrichtigung merkt sich das OK auf dem
+  Dialog-Fenster selbst (`$dialog.Tag`) statt in einer lokalen Variable. Damit
+  laesst sich der Update-Dialog auch erstmals wirklich per OK schliessen und
+  das Update anwenden.
+
+## [3.3.4] - 2026-09-03
+
+### Behoben - PowerShell-Fenster blieb trotz 3.3.3 offen
+- **Symptom:** Bei einem betroffenen Rechner blieb neben dem Programmfenster
+  weiterhin ein leeres PowerShell-Fenster offen (Titelleiste = Dateipfad
+  `C:\Windows\System32\...\powershell.exe`); schloss man es, beendete sich auch
+  das Programm. Der 3.3.3-Fix (Fenster nur *verstecken*) griff dort nicht.
+- **Ursache:** 3.3.3 versteckte das Fenster nur per `ShowWindow(SW_HIDE)` auf
+  der eigenen Fensterkennung (`GetConsoleWindow`). Unter Windows 11 mit
+  **Windows Terminal als Standardkonsole** gehoert das sichtbare Fenster aber
+  `WindowsTerminal.exe`; `ShowWindow` auf der ConPTY-Kennung versteckt es
+  nicht. Auch konnte das nur *versteckte* Fenster durch sein Schliessen das
+  Programm weiterhin beenden, weil der Prozess weiter an der Konsole hing.
+- **Fix:** Neue Funktion `Remove-Console` in `ArenaBridge.ps1` **und**
+  `Start-Bridge.ps1`: Das Fenster wird kurz versteckt (SW_HIDE, damit nichts
+  aufblitzt) und der Prozess loest sich dann per `FreeConsole()` (kernel32)
+  **komplett** von der Konsole. conhost.exe schliesst das Fenster sofort
+  (bzw. Windows Terminal schliesst den Tab), und das Schliessen eines
+  eventuell verbleibenden Fensters kann das Programm nicht mehr beenden.
+  Aufgerufen beim Start und erneut beim Laden der Oberflaeche (`Add_Loaded`).
+- **Diagnose-Modus unveraendert:** Nur mit `OPEN ME TO START.cmd` `/debug`
+  (`ARENABRIDGE_DEBUG=1`) bleibt die Konsole verbunden und sichtbar.
 
 ## [3.3.3] - 2026-09-03
 

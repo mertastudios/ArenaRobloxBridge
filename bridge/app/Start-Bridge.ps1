@@ -16,11 +16,20 @@ param()
 
 $ErrorActionPreference = 'Stop'
 
-# Eigenes Konsolenfenster IMMER verstecken (ausser Diagnose-/Debug-Modus).
+# Eigenes Konsolenfenster KOMPLETT ENTFERNEN (ausser Diagnose-/Debug-Modus).
 # Verhindert, dass neben dem Programm ein leeres PowerShell-Fenster mit dem
-# Dateipfad (powershell.exe) in der Titelleiste offen bleibt. /debug setzt
-# ARENABRIDGE_DEBUG=1 und laesst die Konsole fuer Screenshots sichtbar.
-function Hide-ConsoleWindow {
+# Dateipfad (powershell.exe) in der Titelleiste offen bleibt. Nur VERSTECKT
+# werden (bis 3.3.3, ShowWindow SW_HIDE) reichte nicht: Unter Windows 11 mit
+# Windows Terminal als Standardkonsole blieb das Fenster trotzdem offen, und
+# sein Schliessen beendete das Programm.
+# Deshalb: Fenster kurz verstecken und uns dann per FreeConsole() komplett von
+# der Konsole loesen - das Fenster schliesst sich und gehoert nicht mehr zum
+# Programm. Das gilt auch nach dem Laden der Oberflaeche (ArenaBridge.ps1 ruft
+# Remove-Console erneut auf). /debug setzt ARENABRIDGE_DEBUG=1 und laesst die
+# Konsole verbunden und fuer Screenshots sichtbar.
+# WICHTIG: Klasse und Methoden muessen identisch mit ArenaBridge.ps1 sein -
+# beide laufen im selben Prozess, und der Typ-Guard dort verlaesst sich darauf.
+function Remove-Console {
     if ($env:ARENABRIDGE_DEBUG -eq '1') { return }
     try {
         if (-not ('Arena.ConsoleHider' -as [type])) {
@@ -31,6 +40,7 @@ namespace Arena {
     public static class ConsoleHider {
         [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
         [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        [DllImport("kernel32.dll")] public static extern bool FreeConsole();
     }
 }
 '@ -ErrorAction SilentlyContinue
@@ -39,9 +49,10 @@ namespace Arena {
         if ($h -ne [IntPtr]::Zero) {
             [void][Arena.ConsoleHider]::ShowWindow($h, 0)   # 0 = SW_HIDE
         }
+        [void][Arena.ConsoleHider]::FreeConsole()
     } catch {}
 }
-Hide-ConsoleWindow
+Remove-Console
 
 $logDir = Join-Path $env:LOCALAPPDATA 'ArenaRobloxBridge'
 $logFile = Join-Path $logDir 'startup-error.log'
