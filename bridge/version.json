@@ -1,8 +1,8 @@
 {
-  "version": "3.3.3",
+  "version": "3.3.4",
   "notes": [
-    "Offenes PowerShell-Fenster behoben: Neben dem Programm blieb ein leeres PowerShell-Fenster offen (Titelleiste zeigte den Dateipfad powershell.exe), und beim Schliessen dieses Fensters schloss sich auch das Programm. Ursache war eine zu strenge Bedingung: Das Programm versteckte sein Konsolenfenster nur, wenn an der Konsole genau EIN Prozess hing. Bei Autostart, direktem Start oder Update-Neustart haengen aber oft mehrere Prozesse daran - dann blieb das Fenster dauerhaft stehen.",
-    "Das Programm versteckt sein eigenes Konsolenfenster jetzt IMMER und zuverlaessig, egal wie es gestartet wird (Doppelklick auf 'OPEN ME TO START.cmd', Autostart, Neustart). Zusaetzlich wird das Fenster nach dem Laden der Oberflaeche noch einmal endgueltig ausgeblendet. Es erscheint also kein separates PowerShell-Fenster mehr neben dem Programm.",
-    "Der Diagnose-/Debug-Modus ('OPEN ME TO START.cmd' /debug) zeigt die Konsole weiterhin sichtbar im Vordergrund, damit bei Problemen ein Screenshot moeglich ist."
+    "PowerShell-Fenster endgueltig entfernt: 3.3.3 hat das eigene Konsolenfenster nur versteckt - auf manchen Rechnern (z. B. Windows 11 mit Windows Terminal als Standardkonsole) blieb das leere Fenster mit dem Dateipfad powershell.exe in der Titelleiste trotzdem offen, und sein Schliessen beendete das Programm.",
+    "Das Programm loest sich jetzt per FreeConsole() komplett von seiner Konsole: Das Fenster schliesst sich sofort und sein Schliessen kann das Programm nicht mehr beenden - egal wie es gestartet wurde (Doppelklick, Autostart, Neustart nach Update). Auch beim Laden der Oberflaeche wird das noch einmal abgesichert.",
+    "Der Diagnose-/Debug-Modus ('OPEN ME TO START.cmd' /debug) haelt die Konsole weiterhin verbunden und sichtbar, damit Fehlersuche-Screenshots moeglich bleiben."
   ]
 }

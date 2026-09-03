@@ -1,16 +1,17 @@
 ﻿# ============================================================================
-# Arena Roblox Bridge  -  Version 3.3.3
+# Arena Roblox Bridge  -  Version 3.3.4
 #
-# NEU IN VERSION 3.3.3 (Kurzfassung, Details in CHANGELOG.md):
-#   0.  OFFENES POWERSHELL-FENSTER BEHOBEN: Neben dem Programm blieb ein leeres
-#       PowerShell-Fenster offen (in der Titelleiste stand der Dateipfad
-#       powershell.exe), und wenn man es schloss, schloss sich auch das Programm.
-#       Ursache: Das Fenster wurde nur versteckt, wenn an der Konsole genau EIN
-#       Prozess hing - bei Autostart / direktem Start waren es aber mehrere, also
-#       blieb es stehen. Jetzt versteckt das Programm sein eigenes Konsolenfenster
-#       IMMER und zuverlaessig (Doppelklick, Autostart, Neustart) und blendet es
-#       nach dem Laden der Oberflaeche noch einmal endgueltig aus. Nur der
-#       Diagnose-/Debug-Modus (/debug) zeigt die Konsole weiterhin fuer Screenshots.
+# NEU IN VERSION 3.3.4 (Kurzfassung, Details in CHANGELOG.md):
+#   0.  POWERSHELL-FENSTER ENDGUELTIG ENTFERNT: 3.3.3 hat das eigene
+#       Konsolenfenster nur VERSTECKT (ShowWindow SW_HIDE) - auf manchen Rechnern
+#       (z. B. Windows 11 mit Windows Terminal als Standardkonsole) blieb das
+#       leere Fenster mit dem Dateipfad powershell.exe in der Titelleiste trotzdem
+#       offen, und sein Schliessen beendete das Programm. Jetzt loest sich das
+#       Programm per FreeConsole() KOMPLETT von seiner Konsole: Das Fenster
+#       schliesst sich sofort und sein Schliessen kann das Programm nicht mehr
+#       beenden - egal wie es gestartet wurde (Doppelklick, Autostart, Neustart).
+#       Nur der Diagnose-/Debug-Modus (/debug) haelt die Konsole verbunden und
+#       sichtbar, damit Fehlersuche-Screenshots moeglich bleiben.
 #
 # NEU SEIT 3.3.2 (Kurzfassung, Details in CHANGELOG.md):
 #   0.  STARTER NEU GEBAUT (3.3.2): "OPEN ME TO START.cmd" war wegen eines
@@ -262,21 +263,29 @@ if (-not $script:EncodingOk) {
 }
 
 # ----------------------------------------------------------------------------
-# Eigenes PowerShell-Konsolenfenster verstecken (ausser im Diagnose-/Debug-Modus)
+# Eigenes PowerShell-Konsolenfenster ENTFERNEN (ausser im Diagnose-/Debug-Modus)
 #
-# Frucher wurde das Fenster nur versteckt, wenn an der Konsole GENAU EIN
-# Prozess hing (GetConsoleProcessList == 1). Bei Autostart, direktem Start oder
-# Update-Neustart haengen aber oft mehrere Prozesse an der Konsole - dann blieb
-# ein leeres PowerShell-Fenster mit dem Dateipfad (powershell.exe) in der
-# Titelleiste dauerhaft offen, und sein Schliessen beendete auch das Programm.
-# Genau dieses Fenster ist damit behoben: Das eigene Konsolenfenster wird IMMER
-# versteckt, sobald es existiert - egal wie viele Prozesse daran haengen und egal
-# wie das Programm gestartet wurde (Doppelklick, Autostart, Neustart).
+# Bis 3.3.3 wurde das Fenster nur VERSTECKT (ShowWindow SW_HIDE). Das reichte
+# nicht aus: Unter Windows 11 mit Windows Terminal als Standardkonsole gehoert
+# das sichtbare Fenster WindowsTerminal.exe - ShowWindow auf der eigenen
+# ConPTY-Fensterkennung versteckt es nicht, das leere Fenster mit dem Dateipfad
+# (powershell.exe) blieb offen, und sein Schliessen beendete das Programm.
+#
+# Deshalb loest sich das Programm jetzt per FreeConsole() KOMPLETT von seiner
+# Konsole: conhost.exe schliesst das Konsolenfenster sofort (bzw. Windows
+# Terminal schliesst den Tab), und selbst wenn ein Restfenster uebrig bliebe,
+# koennte sein Schliessen das Programm nicht mehr beenden - es haengt nicht
+# mehr daran. Zur Sicherheit wird das Fenster vorher zusaetzlich versteckt
+# (SW_HIDE), damit es nicht kurz aufblitzt.
+#
+# Aufgerufen wird Remove-Console direkt beim Start UND noch einmal beim Laden
+# der Oberflaeche (Add_Loaded) - falls zwischenzeitlich erneut eine Konsole
+# verbunden wurde (z. B. Neustart nach einem Update).
 # Nur im Diagnose-Modus (/debug, setzt ARENABRIDGE_DEBUG=1) bleibt die Konsole
-# fuer Fehlersuche-Screenshots sichtbar.
+# verbunden und sichtbar, damit Fehlersuche-Screenshots moeglich sind.
 # ----------------------------------------------------------------------------
-function Hide-ConsoleWindow {
-    # Im Diagnose-Modus sichtbar lassen, damit Screenshots moeglich sind.
+function Remove-Console {
+    # Im Diagnose-Modus verbunden und sichtbar lassen (Screenshots).
     if ($env:ARENABRIDGE_DEBUG -eq '1') { return }
     try {
         if (-not ('Arena.ConsoleHider' -as [type])) {
@@ -287,17 +296,23 @@ namespace Arena {
     public static class ConsoleHider {
         [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
         [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        [DllImport("kernel32.dll")] public static extern bool FreeConsole();
     }
 }
 '@ -ErrorAction SilentlyContinue
         }
+        # Erst verstecken (falls die Konsole noch anderen Prozessen gehoert),
+        # dann komplett von der Konsole loesen. FreeConsole schliesst das
+        # Fenster, sobald der letzte Prozess abhaengt - und unser Schliessen
+        # kann das Programm nie mehr beenden, weil es nicht mehr angehaengt ist.
         $h = [Arena.ConsoleHider]::GetConsoleWindow()
         if ($h -ne [IntPtr]::Zero) {
             [void][Arena.ConsoleHider]::ShowWindow($h, 0)   # 0 = SW_HIDE
         }
+        [void][Arena.ConsoleHider]::FreeConsole()
     } catch {}
 }
-Hide-ConsoleWindow
+Remove-Console
 
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
@@ -345,7 +360,7 @@ $script:PlaceNames = @{}
 $script:RobloxStudioPath = $null
 $script:PluginInstalled = $false
 $script:LastTunnelMessage = ''
-$script:AppVersion = '3.3.3'
+$script:AppVersion = '3.3.4'
 $script:SettingsPath = Join-Path $script:AppDataRoot 'settings.json'
 $script:GitHubOwner = 'mertastudios'
 $script:GitHubRepoName = 'ArenaRobloxBridge'
@@ -404,7 +419,7 @@ $script:Shared = [hashtable]::Synchronized(@{
     ShotFolder      = $script:ShotFolder
     Port            = $script:Port
     DocsVersion     = '3.3'
-    AppVersion      = '3.3.3'
+    AppVersion      = '3.3.4'
     SettingsPath    = Join-Path $script:AppDataRoot 'settings.json'
     AccessKey       = $null
     RequestExit     = $false
@@ -502,7 +517,7 @@ function Find-RobloxStudio {
 function Get-PluginSource {
 @'
 --[[============================================================================
-  Arena Studio Bridge - Studio Plugin  (Version 3.3.3)
+  Arena Studio Bridge - Studio Plugin  (Version 3.3.4)
 
   Dieses Plugin verbindet ein Roblox-Studio-Fenster mit dem Programm
   "Arena Roblox Bridge" auf dem PC. Jedes Studio-Fenster bekommt eine eigene
@@ -571,7 +586,7 @@ local StudioTestService = nil
 pcall(function() StudioTestService = game:GetService("StudioTestService") end)
 
 local BASE_URL       = "__BASE_URL__"
-local ARENA_VERSION  = "3.3.3"
+local ARENA_VERSION  = "3.3.4"
 local POLL_WAIT      = 12      -- Sekunden Long-Poll (Befehle kommen sofort an)
 local HEARTBEAT_EVERY = 5      -- Sekunden
 local CHUNK_SIZE     = 48000   -- Bytes je Teilstueck einer Antwort
@@ -11154,7 +11169,7 @@ $xaml = @'
                         <Border Height="1" Background="{StaticResource Line}" Margin="18,14,18,4"/>
                         <StackPanel x:Name="SettingsCategories"/>
                         <Border Height="1" Background="{StaticResource Line}" Margin="18,8,18,12"/>
-                        <TextBlock x:Name="VersionFooter" Text="Arena Roblox Bridge - Version 3.3.3" Foreground="{StaticResource TextFaint}" FontSize="11" Margin="18,0,18,16"/>
+                        <TextBlock x:Name="VersionFooter" Text="Arena Roblox Bridge - Version 3.3.4" Foreground="{StaticResource TextFaint}" FontSize="11" Margin="18,0,18,16"/>
                     </StackPanel>
                 </ScrollViewer>
             </Border>
@@ -12633,9 +12648,11 @@ $window.Add_PreviewMouseDown({
 Initialize-SettingsAccordion
 
 $window.Add_Loaded({
-    # Das eigene Konsolenfenster erneut verstecken: Falls es sich beim Laden der
-    # Oberflaeche gezeigt hat (Start-Rennen), verschwindet es jetzt endgueltig.
-    Hide-ConsoleWindow
+    # Das eigene Konsolenfenster erneut entfernen: Falls waehrend des Ladens der
+    # Oberflaeche wieder eine Konsole verbunden wurde (z. B. Neustart nach einem
+    # Update), loest sich das Programm jetzt erneut vollstaendig davon - das
+    # Fenster ist damit endgueltig weg.
+    Remove-Console
     $window.Opacity = 0
     $fade = [System.Windows.Media.Animation.DoubleAnimation]::new(0, 1, [System.TimeSpan]::FromMilliseconds(380))
     $window.BeginAnimation([System.Windows.Window]::OpacityProperty, $fade)

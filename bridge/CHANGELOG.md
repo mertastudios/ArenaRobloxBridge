@@ -4,6 +4,29 @@ Alle wesentlichen Aenderungen an **Arena Roblox Bridge**. Das Programm
 aktualisiert sich selbst aus diesem Repository (siehe `version.json` - die
 dortige `notes`-Liste erscheint in der Update-Benachrichtigung).
 
+## [3.3.4] - 2026-09-03
+
+### Behoben - PowerShell-Fenster blieb trotz 3.3.3 offen
+- **Symptom:** Bei einem betroffenen Rechner blieb neben dem Programmfenster
+  weiterhin ein leeres PowerShell-Fenster offen (Titelleiste = Dateipfad
+  `C:\Windows\System32\...\powershell.exe`); schloss man es, beendete sich auch
+  das Programm. Der 3.3.3-Fix (Fenster nur *verstecken*) griff dort nicht.
+- **Ursache:** 3.3.3 versteckte das Fenster nur per `ShowWindow(SW_HIDE)` auf
+  der eigenen Fensterkennung (`GetConsoleWindow`). Unter Windows 11 mit
+  **Windows Terminal als Standardkonsole** gehoert das sichtbare Fenster aber
+  `WindowsTerminal.exe`; `ShowWindow` auf der ConPTY-Kennung versteckt es
+  nicht. Auch konnte das nur *versteckte* Fenster durch sein Schliessen das
+  Programm weiterhin beenden, weil der Prozess weiter an der Konsole hing.
+- **Fix:** Neue Funktion `Remove-Console` in `ArenaBridge.ps1` **und**
+  `Start-Bridge.ps1`: Das Fenster wird kurz versteckt (SW_HIDE, damit nichts
+  aufblitzt) und der Prozess loest sich dann per `FreeConsole()` (kernel32)
+  **komplett** von der Konsole. conhost.exe schliesst das Fenster sofort
+  (bzw. Windows Terminal schliesst den Tab), und das Schliessen eines
+  eventuell verbleibenden Fensters kann das Programm nicht mehr beenden.
+  Aufgerufen beim Start und erneut beim Laden der Oberflaeche (`Add_Loaded`).
+- **Diagnose-Modus unveraendert:** Nur mit `OPEN ME TO START.cmd` `/debug`
+  (`ARENABRIDGE_DEBUG=1`) bleibt die Konsole verbunden und sichtbar.
+
 ## [3.3.3] - 2026-09-03
 
 ### Behoben - offenes PowerShell-Fenster neben dem Programm
