@@ -4,6 +4,31 @@ Alle wesentlichen Aenderungen an **Arena Roblox Bridge**. Das Programm
 aktualisiert sich selbst aus diesem Repository (siehe `version.json` - die
 dortige `notes`-Liste erscheint in der Update-Benachrichtigung).
 
+## [3.3.3] - 2026-09-03
+
+### Behoben - offenes PowerShell-Fenster neben dem Programm
+- **Symptom:** Neben dem Programm blieb ein leeres PowerShell-Fenster offen;
+  in der Titelleiste stand der Dateipfad `C:\Windows\System32\...\powershell.exe`
+  (kein freundlicher Titel). Schloss man dieses Fenster, schloss sich auch das
+  Programm - es war also das Konsolenfenster des Programms selbst, das nicht
+  versteckt wurde.
+- **Ursache:** Das Verstecken hing an der Bedingung, dass an der Konsole GENAU
+  EIN Prozess haengt (`GetConsoleProcessList == 1`). Bei Doppelklick ueber die
+  `.cmd`, beim Autostart oder nach Neustart/Update haengen jedoch oft mehrere
+  Prozesse an derselben Konsole (oder PowerShell beachtet `-WindowStyle Hidden`
+  nicht zuverlaessig). Dann griff das Verstecken nie - das Fenster blieb offen.
+- **Fix:** `ArenaBridge.ps1` versteckt sein eigenes Konsolenfenster jetzt
+  IMMER (Win32 `GetConsoleWindow` + `ShowWindow` SW_HIDE), sobald es existiert -
+  unabhaengig davon, wie viele Prozesse daran haengen und wie das Programm
+  gestartet wurde. Zusaetzlich wird das Fenster nach dem Laden der Oberflaeche
+  noch einmal endgueltig ausgeblendet (doppelte Absicherung gegen das
+  Start-Rennen beim Laden).
+- **Diagnose-Modus bleibt sichtbar:** `OPEN ME TO START.cmd` setzt beim
+  Aufruf mit `/debug` (bzw. `-debug`/`debug`) die Umgebungsvariable
+  `ARENABRIDGE_DEBUG=1`. Nur dann bleibt die Konsole sichtbar, damit man bei
+  Problemen einen Screenshot vom ganzen Ablauf machen kann. Normaler Start
+  setzt diese Variable nicht - das Fenster wird also versteckt.
+
 ## [3.3.2] - 2026-09-03
 
 ### Behoben - der Starter liess sich weiterhin nicht starten

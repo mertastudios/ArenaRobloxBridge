@@ -36,6 +36,9 @@ if not exist "%PSEXE%" goto :fehler_powershell
 
 rem --- 3. Start: PowerShell direkt, versteckt und entkoppelt -------------------
 rem     Es erscheint nur das Programmfenster, kein Konsolenfenster.
+rem     ARENABRIDGE_DEBUG wird hier bewusst NICHT gesetzt: Das Programm
+rem     versteckt sein eigenes Konsolenfenster dann immer selbst.
+set ARENABRIDGE_DEBUG=
 start "" "%PSEXE%" -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "%LAUNCHER%"
 
 echo.
@@ -49,6 +52,7 @@ rem ============================================================================
 rem  Diagnose-Modus: alles sichtbar im Vordergrund, am Ende bleibt das Fenster
 rem ============================================================================
 :debug
+set ARENABRIDGE_DEBUG=1
 echo.
 echo   [DIAGNOSE-MODUS] Alles laeuft jetzt sichtbar im Vordergrund.
 echo   Dieses Fenster bleibt am Ende offen. Bei Problemen bitte einen
