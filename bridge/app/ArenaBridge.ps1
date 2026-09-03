@@ -1,17 +1,19 @@
 ﻿# ============================================================================
-# Arena Roblox Bridge  -  Version 3.3.1
+# Arena Roblox Bridge  -  Version 3.3.2
 #
-# NEU IN VERSION 3.3.1 (Kurzfassung, Details in CHANGELOG.md):
-#   0.  START REPARIERT (3.3.1): Diese Datei hatte drei BOMs am Anfang -
-#       PowerShell konnte sie deshalb nicht laden und beendete sich sofort.
-#       Jetzt genau EIN BOM. Bitte diese Datei immer als "UTF-8 mit BOM"
-#       speichern und niemals ein zweites BOM davorsetzen.
-#   1.  KEIN KONSOLENFENSTER MEHR: Gestartet wird nur ueber die Datei
-#       "OPEN ME TO START.cmd" im Hauptordner; sie ruft
-#       bridge\app\Start-Bridge.vbs -> bridge\app\Start-Bridge.ps1 -> diese
-#       Datei auf. PowerShell laeuft versteckt und entkoppelt - es gibt nur
-#       das Programmfenster. Startfehler werden jetzt angezeigt statt
-#       verschluckt (Log: %LOCALAPPDATA%\ArenaRobloxBridge\startup-error.log).
+# NEU IN VERSION 3.3.2 (Kurzfassung, Details in CHANGELOG.md):
+#   0.  STARTER NEU GEBAUT (3.3.2): "OPEN ME TO START.cmd" war wegen eines
+#       ungueltigen cmd.exe-Befehls nicht lauffaehig - ein mehrzeiliger
+#       if-Klammerblock stand direkt hinter dem Verkettungsoperator "||".
+#       cmd.exe brach das Skript beim Parsen ab, das Fenster blitzte nur
+#       kurz auf. Der Starter ist jetzt einfach aufgebaut (nur Zeilen und
+#       goto-Labels), bleibt bei JEDEM Fehler mit Meldung + Pause offen und
+#       hat einen /debug-Modus fuer die Fehlersuche.
+#   1.  KEIN VBS-ZWISCHENSCHRITT MEHR: wscript / Start-Bridge.vbs ist
+#       entfallen (Mark-of-the-Web / SmartScreen koennen VBS blockieren).
+#       Der Starter ruft PowerShell jetzt direkt und versteckt auf:
+#       OPEN ME TO START.cmd -> Start-Bridge.ps1 -> diese Datei.
+#       Autostart, Neustart und Auto-Update nutzen denselben Weg.
 #   2.  DOPPELSTART OHNE PORT-FEHLER: Startet man das Programm, waehrend es
 #       bereits laeuft, wird die alte Instanz zum Schliessen aufgefordert und
 #       die neue uebernimmt Port und Tunnel.
@@ -312,7 +314,7 @@ $script:PlaceNames = @{}
 $script:RobloxStudioPath = $null
 $script:PluginInstalled = $false
 $script:LastTunnelMessage = ''
-$script:AppVersion = '3.3.1'
+$script:AppVersion = '3.3.2'
 $script:SettingsPath = Join-Path $script:AppDataRoot 'settings.json'
 $script:GitHubOwner = 'mertastudios'
 $script:GitHubRepoName = 'ArenaRobloxBridge'
@@ -371,7 +373,7 @@ $script:Shared = [hashtable]::Synchronized(@{
     ShotFolder      = $script:ShotFolder
     Port            = $script:Port
     DocsVersion     = '3.3'
-    AppVersion      = '3.3.1'
+    AppVersion      = '3.3.2'
     SettingsPath    = Join-Path $script:AppDataRoot 'settings.json'
     AccessKey       = $null
     RequestExit     = $false
@@ -469,7 +471,7 @@ function Find-RobloxStudio {
 function Get-PluginSource {
 @'
 --[[============================================================================
-  Arena Studio Bridge - Studio Plugin  (Version 3.3.1)
+  Arena Studio Bridge - Studio Plugin  (Version 3.3.2)
 
   Dieses Plugin verbindet ein Roblox-Studio-Fenster mit dem Programm
   "Arena Roblox Bridge" auf dem PC. Jedes Studio-Fenster bekommt eine eigene
@@ -538,7 +540,7 @@ local StudioTestService = nil
 pcall(function() StudioTestService = game:GetService("StudioTestService") end)
 
 local BASE_URL       = "__BASE_URL__"
-local ARENA_VERSION  = "3.3.1"
+local ARENA_VERSION  = "3.3.2"
 local POLL_WAIT      = 12      -- Sekunden Long-Poll (Befehle kommen sofort an)
 local HEARTBEAT_EVERY = 5      -- Sekunden
 local CHUNK_SIZE     = 48000   -- Bytes je Teilstueck einer Antwort
@@ -9624,7 +9626,7 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
                     code = 'MULTIPLE_PLACES'
                     error = "Mehrere Places sind mit diesem Key verbunden ($($resolution.places.Count)). Ohne 'place' kann die Bridge nicht wissen, welcher gemeint ist."
                     places = $resolution.places
-                    howToFix = 'Rufe GET /api/places?token=... auf oder schau in die Antwort hier: waehle daraus placeId/placeName/sessionId und wiederhole den Aufruf mit args.place (z.B. { place = "<placeId>", ... }). Nur wenn genau EIN Place verbunden ist, ist 'place' optional.'
+                    howToFix = 'Rufe GET /api/places?token=... auf oder schau in die Antwort hier: waehle daraus placeId/placeName/sessionId und wiederhole den Aufruf mit args.place (z.B. { place = "<placeId>", ... }). Nur wenn genau EIN Place verbunden ist, ist "place" optional.'
                 }
                 continue
             }
@@ -10080,9 +10082,8 @@ function Set-StartupEnabled {
     param([bool]$Enabled)
     $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     if ($Enabled) {
-        # Autostart nutzt denselben Startweg wie der Doppelklick (VBS/Wscript,
-        # kein Konsolenfenster). Nur wenn kein VBS gefunden wird: PowerShell
-        # direkt, aber versteckt.
+        # Autostart nutzt denselben Startweg wie der Doppelklick: PowerShell
+        # direkt, versteckt und entkoppelt (kein Konsolenfenster).
         $launch = Get-LaunchCommand
         if ($launch) {
             $value = "`"$($launch.File)`" $($launch.Arguments)"
@@ -10099,29 +10100,15 @@ function Set-StartupEnabled {
 # ----------------------------------------------------------------------------
 # STARTER / VERSTECKTER START
 # Das Programm wird grundsaetzlich OHNE sichtbares Konsolenfenster gestartet:
-#   - "bridge\app\Start-Bridge.vbs" startet PowerShell mit Fenster-Stil 0
-#     (versteckt). Es erscheint NUR das Programmfenster. Angeklickt wird vom
-#     Nutzer aber immer "OPEN ME TO START.cmd" im Hauptordner.
-#   - Autostart, Neustart und Auto-Update verwenden dieselbe Funktion.
+#   - "OPEN ME TO START.cmd" im Hauptordner ruft PowerShell direkt und
+#     versteckt auf: .cmd -> bridge\app\Start-Bridge.ps1 -> diese Datei.
+#     Es erscheint NUR das Programmfenster.
+#   - Autostart, Neustart und Auto-Update verwenden dieselbe Funktion
+#     (Get-LaunchCommand).
 # ----------------------------------------------------------------------------
-function Get-StartBridgeVbsPath {
-    $candidates = @()
-    if ($script:AppRoot)    { $candidates += Join-Path $script:AppRoot 'Start-Bridge.vbs' }
-    if ($script:BundleRoot) { $candidates += Join-Path $script:BundleRoot 'app\Start-Bridge.vbs' }
-    if ($script:RepoRoot)   { $candidates += Join-Path $script:RepoRoot 'bridge\app\Start-Bridge.vbs' }
-    foreach ($c in $candidates) {
-        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
-    }
-    return $null
-}
-
 function Get-LaunchCommand {
     # Liefert ein Objekt mit File/Arguments, mit dem das Programm versteckt
     # und entkoppelt gestartet wird (kein sichtbares Konsolenfenster).
-    $vbs = Get-StartBridgeVbsPath
-    if ($vbs) {
-        return [pscustomobject]@{ File = 'wscript.exe'; Arguments = "`"$vbs`"" }
-    }
     $wrapper = Join-Path $script:AppRoot 'Start-Bridge.ps1'
     if (Test-Path -LiteralPath $wrapper) {
         return [pscustomobject]@{ File = 'powershell.exe'; Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File `"$wrapper`"" }
@@ -10494,13 +10481,10 @@ foreach ($legacy in @('Start Bridge.vbs','Arena Roblox Bridge.vbs','Arena Roblox
     $old = Join-Path $RepoRoot $legacy
     if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue }
 }
-# Programm neu starten (versteckt)
-$vbs = Join-Path $AppRoot 'Start-Bridge.vbs'
+# Programm neu starten (versteckt, ohne wscript/VBS)
 $wrapper = Join-Path $AppRoot 'Start-Bridge.ps1'
 $launcher = $null
-if (Test-Path -LiteralPath $vbs) {
-    $launcher = 'wscript.exe'; $args = "`"$vbs`""
-} elseif (Test-Path -LiteralPath $wrapper) {
+if (Test-Path -LiteralPath $wrapper) {
     $launcher = 'powershell.exe'
     $args = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File `"$wrapper`""
 } else {
@@ -11139,7 +11123,7 @@ $xaml = @'
                         <Border Height="1" Background="{StaticResource Line}" Margin="18,14,18,4"/>
                         <StackPanel x:Name="SettingsCategories"/>
                         <Border Height="1" Background="{StaticResource Line}" Margin="18,8,18,12"/>
-                        <TextBlock x:Name="VersionFooter" Text="Arena Roblox Bridge - Version 3.3.1" Foreground="{StaticResource TextFaint}" FontSize="11" Margin="18,0,18,16"/>
+                        <TextBlock x:Name="VersionFooter" Text="Arena Roblox Bridge - Version 3.3.2" Foreground="{StaticResource TextFaint}" FontSize="11" Margin="18,0,18,16"/>
                     </StackPanel>
                 </ScrollViewer>
             </Border>

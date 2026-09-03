@@ -1,12 +1,11 @@
 {
-  "version": "3.3.1",
+  "version": "3.3.2",
   "notes": [
-    "Startproblem behoben: Beim Doppelklick passierte gar nichts mehr, weil in ArenaBridge.ps1 drei Byte-Order-Marks (BOM) hintereinander standen. PowerShell konnte die Datei dadurch nicht laden. Es gibt jetzt genau ein BOM - und der Starter repariert ein defektes BOM automatisch.",
-    "Aufgeraeumtes Verzeichnis: Im Hauptordner liegt nur noch 'OPEN ME TO START.cmd'. Alles andere steckt im Unterordner 'bridge'.",
-    "Kein stilles Verschwinden mehr: Schlaegt der Start fehl, erscheint ein Fenster mit dem Grund im Klartext, und das Startfenster bleibt offen statt sich sofort zu schliessen.",
-    "Startprotokoll unter %LOCALAPPDATA%\\ArenaRobloxBridge\\startup-error.log fuer schnelle Fehlersuche.",
-    "Syntaxfehler im Auto-Updater behoben (param() stand hinter einer Anweisung) - Updates lassen sich wieder einspielen.",
-    "Auto-Update kennt den neuen Ordner-Aufbau und raeumt alte Startdateien frueherer Versionen weg.",
-    "Zeilenenden der Windows-Startdateien werden per .gitattributes als CRLF erzwungen."
+    "Startproblem behoben: In 'OPEN ME TO START.cmd' stand ein ungueltiger cmd.exe-Befehl - ein mehrzeiliger if-Klammerblock direkt hinter dem Verkettungsoperator ||. cmd.exe brach das Skript beim Parsen ab, das Fenster blitzte nur auf und schloss sich. Der Starter wurde komplett neu und einfach gebaut.",
+    "Starter bleibt bei JEDEM Fehler offen (Meldung + Pause). Er schliesst sich nur, wenn der Start geklappt hat.",
+    "Neuer Diagnose-Modus: 'OPEN ME TO START.cmd' /debug fuehrt alles sichtbar im Vordergrund aus und pausiert am Ende - ideal fuer Screenshots bei Problemen.",
+    "Kein VBS-Zwischenschritt mehr: Der Starter ruft PowerShell jetzt direkt und versteckt auf (kein wscript / Start-Bridge.vbs). Mark-of-the-Web/SmartScreen koennen den Start dadurch nicht mehr durch blockierte VBS-Dateien stoppen.",
+    "Kleiner Fehler in ArenaBridge.ps1 behoben: eine Meldung enthielt ein Apostroph innerhalb eines Apostroph-Textes ('ist 'place' optional') und haette beim Thema 'mehrere Places' einen Fehler geworfen.",
+    "README: Hinweis zum Entsperren der ZIP (Mark of the Web: Rechtsklick -> Eigenschaften -> Zulassen) vor dem Entpacken ergaenzt."
   ]
 }
