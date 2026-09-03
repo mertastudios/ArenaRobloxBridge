@@ -1,8 +1,10 @@
 # ArenaRobloxBridge – Umbauplan (Stand: 2026-09-03)
 
 > **Status: Wartet auf die Programm-Dateien.**
-> Die im Chat hochgeladenen Dateien sind nicht angekommen (Workspace + GitHub-Repo geprüft – nur diese README-Struktur vorhanden).
-> Sobald die Dateien vorliegen (erneut im Chat hochladen **oder** selbst ins Repo pushen), wird dieser Plan 1:1 am **bestehenden Code** umgesetzt – nichts wird neu gebaut.
+> Die im Chat hochgeladenen Dateien sind **nie angekommen** (Workspace + GitHub-Repo geprüft – nur diese README-Struktur vorhanden).
+> Verdacht des Nutzers: **Arena-Agent-Bug** – wenn GitHub gleichzeitig verbunden ist UND Dateien hochgeladen werden, kommen die Dateien nie an. Wurde gemeldet, bitte an Arena weitergeben.
+>
+> **Übergabe an die nächste Session:** Der Nutzer lädt die Programm-Dateien selbst direkt ins GitHub-Repo (Branch `main`). Diese Datei liegt auf dem Branch `arena/01a067c9-arenarobloxbridge` (PR gestellt). Nach dem Upload der Programm-Dateien: PR mergen (oder Branch angeben), dann `UPDATE-PLAN.md` 1:1 am **bestehenden Code** umsetzen – nichts wird neu gebaut.
 
 ---
 
