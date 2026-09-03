@@ -1,8 +1,50 @@
 # Changelog
 
 Alle wesentlichen Aenderungen an **Arena Roblox Bridge**. Das Programm
-aktualisiert sich selbst aus diesem Repository (siehe `version.json` - die
-dortige `notes`-Liste erscheint in der Update-Benachrichtigung).
+aktualisiert sich selbst aus diesem Repository (siehe `bridge/version.json` -
+die dortige `notes`-Liste erscheint in der Update-Benachrichtigung).
+
+## [3.3.5] - 2026-09-03
+
+### Behoben - Auto-Update fand nie ein Update
+- **Symptom:** Die integrierte Update-Suche meldete dauerhaft "Keine Verbindung
+  zu GitHub" bzw. zeigte nie eine Update-Benachrichtigung; Updates mussten
+  manuell als ZIP von GitHub heruntergeladen werden.
+- **Ursache 1 (falsche URL):** `$script:UpdateInfoUrl` zeigte auf
+  `.../main/version.json` - die Datei liegt im Repository aber unter
+  `bridge/version.json`. GitHub antwortete auf die falsche Adresse mit 404,
+  also wurde nie ein Update gefunden.
+- **Ursache 2 (falsche Staging-Verifikation):** Nach dem Download des Repo-ZIPs
+  wurde `version.json` im Stamm des entpackten Archivs geprueft - im ZIP liegt
+  sie unter `bridge\`. Die Verifikung schlug deshalb immer fehl; selbst ein
+  erfolgreich heruntergeladenes Update waere nie als gueltig erkannt und
+  angewendet worden.
+- **Fix:** Update-URL auf `main/bridge/version.json` korrigiert; die
+  Verifikation (und der Marker in `Get-StagedVersionDir`) prueft jetzt
+  `bridge\version.json` mit Rueckfall auf den Stamm.
+- **Kompatibilitaet:** Im Repository-Stamm liegt jetzt eine Kopierversion
+  `version.json`. Grund: Bereits installierte 3.3.3-Versionen fragen mit ihrer
+  alten (falschen) URL genau diese Stamm-Datei ab - mit der Kopie finden auch
+  sie das Update und stagen es erfolgreich (deren Verifikation prueft den
+  Stamm, den das ZIP durch die Kopie jetzt ebenfalls enthaelt). Lokal wird die
+  Stamm-Kopie nie gelesen (es gilt immer `bridge\version.json`).
+
+### Behoben - Fehler-Toast "... Methode ... NULL" beim Start
+- **Symptom:** Kurz nach dem Start erschien der Toast "Fehler abgefangen: Es
+  ist nicht moeglich, eine Methode fuer einen Ausdruck aufzurufen, der den
+  NULL hat."
+- **Ursache:** Der Auto-Update-Start-Timer rief in seinem `Add_Tick`-Handler
+  `$delay.Stop()` auf. Lokale Variablen sind in PowerShell-Event-Handlern
+  nicht sichtbar (keine Closure) - `$delay` war im Handler NULL, die Zeile
+  warf die gemeldete Ausnahme und `Start-AutoUpdateFlow` lief folglich nie.
+  Der Code kennt diese Falle (Kommentar bei den Toast-Timern) - vier Stellen
+  hatten sie trotzdem missachtet.
+- **Fix (4 Stellen):** Auto-Update-Start-Timer, "Jetzt nach Updates suchen"-
+  Button und Autostart-Checkbox arbeiten jetzt mit dem Sender (`param($s, $e)`
+  bzw. `$s.Tag`), die Update-Benachrichtigung merkt sich das OK auf dem
+  Dialog-Fenster selbst (`$dialog.Tag`) statt in einer lokalen Variable. Damit
+  laesst sich der Update-Dialog auch erstmals wirklich per OK schliessen und
+  das Update anwenden.
 
 ## [3.3.4] - 2026-09-03
 

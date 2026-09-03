@@ -52,8 +52,9 @@ Nach dem Entpacken sieht es genau so aus - bewusst minimal:
 ArenaRobloxBridge\
 ├── OPEN ME TO START.cmd   <-- NUR das hier doppelklicken
 ├── README.md
+├── version.json            (Kopie für Auto-Update alter Versionen, s. u.)
 └── bridge\                <-- der ganze Rest, nichts anfassen
-    ├── version.json
+    ├── version.json       (führende Version: steuert das Auto-Update)
     ├── CHANGELOG.md
     ├── app\
     │   ├── ArenaBridge.ps1     (das Programm)
@@ -86,8 +87,10 @@ Details zu allen Werkzeugen: [bridge/docs/TOOLS.md](bridge/docs/TOOLS.md).
 
 ## Auto-Update (GitHub)
 
-- Das Programm liest `version.json` aus diesem Repository (`main`) und prüft
-  bei jedem Start (und auf Knopfdruck unter Einstellungen → Updates).
+- Das Programm liest `bridge/version.json` aus diesem Repository (`main`) und
+  prüft bei jedem Start (und auf Knopfdruck unter Einstellungen → Updates).
+  Die `version.json` im Stamm ist nur eine Kopie, über die bereits installierte
+  Versionen bis 3.3.3 (mit damals falscher Abfrage-URL) ihre Updates finden.
 - Ist eine **neuere Version** verfügbar, lädt das Programm das komplette
   Repository im Hintergrund herunter, verifiziert es und zeigt eine
   **Benachrichtigung mit Version + Changelog**.
@@ -187,8 +190,9 @@ Bearer …`):
   Voraussetzungen, meldet Fehler im Klartext) → `bridge/app/ArenaBridge.ps1`.
   PowerShell wird vom Starter direkt und versteckt gestartet (kein wscript).
 - `bridge/version.json` + `bridge/CHANGELOG.md` steuern das Auto-Update.
-- Neue Versionen: Code ändern, `version` in `bridge/app/ArenaBridge.ps1` **und**
-  `bridge/version.json` erhöhen, `bridge/CHANGELOG.md` ergänzen, committen und
+- Neue Versionen: Code ändern, `version` in `bridge/app/ArenaBridge.ps1`
+  **und** in `bridge/version.json` erhöhen, die Kopie `version.json` im Stamm
+  synchron halten, `bridge/CHANGELOG.md` ergänzen, committen und
   nach `main` pushen - das Programm aktualisiert sich danach selbst.
 - `.gitattributes` erzwingt CRLF für `.cmd`/`.vbs`/`.ps1`.
 - `bridge/docs/TOOLS.md`: Werkzeugreferenz (aus `GET /api/docs?full=1`).
