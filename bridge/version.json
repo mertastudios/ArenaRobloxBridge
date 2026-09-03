@@ -1,0 +1,12 @@
+{
+  "version": "3.3.1",
+  "notes": [
+    "Startproblem behoben: Beim Doppelklick passierte gar nichts mehr, weil in ArenaBridge.ps1 drei Byte-Order-Marks (BOM) hintereinander standen. PowerShell konnte die Datei dadurch nicht laden. Es gibt jetzt genau ein BOM - und der Starter repariert ein defektes BOM automatisch.",
+    "Aufgeraeumtes Verzeichnis: Im Hauptordner liegt nur noch 'OPEN ME TO START.cmd'. Alles andere steckt im Unterordner 'bridge'.",
+    "Kein stilles Verschwinden mehr: Schlaegt der Start fehl, erscheint ein Fenster mit dem Grund im Klartext, und das Startfenster bleibt offen statt sich sofort zu schliessen.",
+    "Startprotokoll unter %LOCALAPPDATA%\\ArenaRobloxBridge\\startup-error.log fuer schnelle Fehlersuche.",
+    "Syntaxfehler im Auto-Updater behoben (param() stand hinter einer Anweisung) - Updates lassen sich wieder einspielen.",
+    "Auto-Update kennt den neuen Ordner-Aufbau und raeumt alte Startdateien frueherer Versionen weg.",
+    "Zeilenenden der Windows-Startdateien werden per .gitattributes als CRLF erzwungen."
+  ]
+}

@@ -21,8 +21,10 @@ Skripte schreiben und prüfen, Play-Tests starten, GUI bedienen, Fehler lesen -
 1. **ZIP herunterladen:** `Code ▾ → Download ZIP` (oder
    [direkt](https://github.com/mertastudios/ArenaRobloxBridge/archive/refs/heads/main.zip)).
 2. **Entpacken** in einen beliebigen Ordner (z. B. `C:\ArenaRobloxBridge`).
-3. **Doppelklick auf `Start Bridge.vbs`** (oder `OPEN ME TO START.cmd`).
-   Es öffnet sich nur das Programmfenster - **kein** Konsolenfenster.
+3. **Doppelklick auf `OPEN ME TO START.cmd`** - das ist die einzige Datei im
+   Hauptordner und die einzige, die du je anklicken musst. Alles andere liegt
+   im Unterordner `bridge`. Es öffnet sich nur das Programmfenster.
+   *Klappt der Start nicht, bleibt das Fenster offen und nennt den Grund.*
 4. Roblox Studio starten und ein Place öffnen. Das Plugin installiert sich
    automatisch, und das Place erscheint als Zeile im Programmfenster.
 5. Den Zugangs-Prompt kopieren (Zeilen-Menü „…“ oder
@@ -31,6 +33,25 @@ Skripte schreiben und prüfen, Play-Tests starten, GUI bedienen, Fehler lesen -
 > Wird das Programm ein zweites Mal gestartet, während es schon läuft,
 > schließt sich die alte Instanz automatisch und die neue übernimmt - es gibt
 > keinen Port-Fehler.
+
+## Ordner-Aufbau
+
+Nach dem Entpacken sieht es genau so aus - bewusst minimal:
+
+```
+ArenaRobloxBridge\
+├── OPEN ME TO START.cmd   <-- NUR das hier doppelklicken
+├── README.md
+└── bridge\                <-- der ganze Rest, nichts anfassen
+    ├── version.json
+    ├── CHANGELOG.md
+    ├── app\
+    │   ├── ArenaBridge.ps1     (das Programm)
+    │   ├── Start-Bridge.ps1    (Start-Wrapper mit Fehlermeldungen)
+    │   └── Start-Bridge.vbs    (startet lautlos, ohne Konsolenfenster)
+    └── docs\
+        └── TOOLS.md
+```
 
 ## Voraussetzungen
 
@@ -52,7 +73,7 @@ Skripte schreiben und prüfen, Play-Tests starten, GUI bedienen, Fehler lesen -
 | **Werkzeuge** | `run_lua` mit persistenten Globals und Timeouts bis 300 s, Jobs für lange Läufe, Uploads für große Texte, Dokumentation `get_docs` / `GET /api/docs` |
 | **Einstellungen** | Aufklappbare Kategorien: Updates, Sonstiges (Autostart, Neustart), Key für alle Places |
 
-Details zu allen Werkzeugen: [docs/TOOLS.md](docs/TOOLS.md).
+Details zu allen Werkzeugen: [bridge/docs/TOOLS.md](bridge/docs/TOOLS.md).
 
 ## Auto-Update (GitHub)
 
@@ -132,22 +153,30 @@ Bearer …`):
 - **„Plugin installiert“-Toast erscheint nicht:** Studio neu starten oder den
   Plugin-Ordner prüfen (Studio → Plugins → Arena Roblox Bridge). Das Plugin
   verbindet sich automatisch, sobald ein Place geöffnet ist.
-- **Umlaute erscheinen falsch:** Die Datei `app/ArenaBridge.ps1` muss „UTF-8
-  mit BOM“ sein. Das Programm repariert eine fehlende BOM beim nächsten Start
-  selbst (Marker `äöüßÄÖÜ`).
+- **Umlaute erscheinen falsch:** Die Datei `bridge/app/ArenaBridge.ps1` muss
+  „UTF-8 mit **genau einem** BOM“ sein. Das Programm repariert eine fehlende
+  BOM selbst (Marker `äöüßÄÖÜ`), der Starter entfernt zusätzlich doppelte BOMs.
+- **Beim Doppelklick passiert nichts:** In Version 3.3.0 standen drei BOMs
+  hintereinander in `ArenaBridge.ps1` - PowerShell konnte die Datei dadurch
+  nicht laden und beendete sich sofort. Ab 3.3.1 ist das behoben; sollte doch
+  einmal etwas fehlschlagen, zeigt `OPEN ME TO START.cmd` den Grund an und
+  schreibt ihn nach `%LOCALAPPDATA%\ArenaRobloxBridge\startup-error.log`.
 - **Kein Play-Start:** Studio fokussieren, Dialoge schließen; `play_start`
   Antwort enthält `diagnostics` und `recentErrors`.
 
 ## Entwicklung
 
-- Alles Wesentliche steckt in **einer** Datei: `app/ArenaBridge.ps1`
-  (Programm + eingebettetes Studio-Plugin). `Start Bridge.vbs` startet sie
-  ohne Konsolenfenster.
-- `version.json` + `CHANGELOG.md` steuern das Auto-Update.
-- Neue Versionen: Code ändern, `version` in `app/ArenaBridge.ps1` **und**
-  `version.json` erhöhen, `CHANGELOG.md` ergänzen, committen und nach `main`
-  pushen - das Programm aktualisiert sich danach selbst.
-- `docs/TOOLS.md`: Werkzeugreferenz (wird aus `GET /api/docs?full=1` gepflegt).
+- Alles Wesentliche steckt in **einer** Datei: `bridge/app/ArenaBridge.ps1`
+  (Programm + eingebettetes Studio-Plugin).
+- Startkette: `OPEN ME TO START.cmd` → `bridge/app/Start-Bridge.vbs`
+  (lautlos) → `bridge/app/Start-Bridge.ps1` (prüft Voraussetzungen, meldet
+  Fehler im Klartext) → `bridge/app/ArenaBridge.ps1`.
+- `bridge/version.json` + `bridge/CHANGELOG.md` steuern das Auto-Update.
+- Neue Versionen: Code ändern, `version` in `bridge/app/ArenaBridge.ps1` **und**
+  `bridge/version.json` erhöhen, `bridge/CHANGELOG.md` ergänzen, committen und
+  nach `main` pushen - das Programm aktualisiert sich danach selbst.
+- `.gitattributes` erzwingt CRLF für `.cmd`/`.vbs`/`.ps1`.
+- `bridge/docs/TOOLS.md`: Werkzeugreferenz (aus `GET /api/docs?full=1`).
 
 ---
 
