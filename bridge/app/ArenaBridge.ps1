@@ -1,7 +1,18 @@
 ﻿# ============================================================================
-# Arena Roblox Bridge  -  Version 3.3.2
+# Arena Roblox Bridge  -  Version 3.3.3
 #
-# NEU IN VERSION 3.3.2 (Kurzfassung, Details in CHANGELOG.md):
+# NEU IN VERSION 3.3.3 (Kurzfassung, Details in CHANGELOG.md):
+#   0.  OFFENES POWERSHELL-FENSTER BEHOBEN: Neben dem Programm blieb ein leeres
+#       PowerShell-Fenster offen (in der Titelleiste stand der Dateipfad
+#       powershell.exe), und wenn man es schloss, schloss sich auch das Programm.
+#       Ursache: Das Fenster wurde nur versteckt, wenn an der Konsole genau EIN
+#       Prozess hing - bei Autostart / direktem Start waren es aber mehrere, also
+#       blieb es stehen. Jetzt versteckt das Programm sein eigenes Konsolenfenster
+#       IMMER und zuverlaessig (Doppelklick, Autostart, Neustart) und blendet es
+#       nach dem Laden der Oberflaeche noch einmal endgueltig aus. Nur der
+#       Diagnose-/Debug-Modus (/debug) zeigt die Konsole weiterhin fuer Screenshots.
+#
+# NEU SEIT 3.3.2 (Kurzfassung, Details in CHANGELOG.md):
 #   0.  STARTER NEU GEBAUT (3.3.2): "OPEN ME TO START.cmd" war wegen eines
 #       ungueltigen cmd.exe-Befehls nicht lauffaehig - ein mehrzeiliger
 #       if-Klammerblock stand direkt hinter dem Verkettungsoperator "||".
@@ -251,22 +262,42 @@ if (-not $script:EncodingOk) {
 }
 
 # ----------------------------------------------------------------------------
-# Eigenes Konsolenfenster verstecken (fremde Konsolen bleiben offen).
+# Eigenes PowerShell-Konsolenfenster verstecken (ausser im Diagnose-/Debug-Modus)
+#
+# Frucher wurde das Fenster nur versteckt, wenn an der Konsole GENAU EIN
+# Prozess hing (GetConsoleProcessList == 1). Bei Autostart, direktem Start oder
+# Update-Neustart haengen aber oft mehrere Prozesse an der Konsole - dann blieb
+# ein leeres PowerShell-Fenster mit dem Dateipfad (powershell.exe) in der
+# Titelleiste dauerhaft offen, und sein Schliessen beendete auch das Programm.
+# Genau dieses Fenster ist damit behoben: Das eigene Konsolenfenster wird IMMER
+# versteckt, sobald es existiert - egal wie viele Prozesse daran haengen und egal
+# wie das Programm gestartet wurde (Doppelklick, Autostart, Neustart).
+# Nur im Diagnose-Modus (/debug, setzt ARENABRIDGE_DEBUG=1) bleibt die Konsole
+# fuer Fehlersuche-Screenshots sichtbar.
 # ----------------------------------------------------------------------------
-try {
-    $consoleHelper = Add-Type -MemberDefinition @'
-[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern uint GetConsoleProcessList(uint[] list, uint count);
-[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
-[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
-'@ -Name 'ArenaConsole' -Namespace 'Arena' -PassThru -ErrorAction Stop
-
-    $processBuffer = New-Object uint32[] 64
-    $attached = $consoleHelper::GetConsoleProcessList($processBuffer, 64)
-    $consoleHandle = $consoleHelper::GetConsoleWindow()
-    if ($attached -eq 1 -and $consoleHandle -ne [IntPtr]::Zero) {
-        [void]$consoleHelper::ShowWindow($consoleHandle, 0)
+function Hide-ConsoleWindow {
+    # Im Diagnose-Modus sichtbar lassen, damit Screenshots moeglich sind.
+    if ($env:ARENABRIDGE_DEBUG -eq '1') { return }
+    try {
+        if (-not ('Arena.ConsoleHider' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace Arena {
+    public static class ConsoleHider {
+        [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+        [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     }
-} catch {}
+}
+'@ -ErrorAction SilentlyContinue
+        }
+        $h = [Arena.ConsoleHider]::GetConsoleWindow()
+        if ($h -ne [IntPtr]::Zero) {
+            [void][Arena.ConsoleHider]::ShowWindow($h, 0)   # 0 = SW_HIDE
+        }
+    } catch {}
+}
+Hide-ConsoleWindow
 
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
@@ -314,7 +345,7 @@ $script:PlaceNames = @{}
 $script:RobloxStudioPath = $null
 $script:PluginInstalled = $false
 $script:LastTunnelMessage = ''
-$script:AppVersion = '3.3.2'
+$script:AppVersion = '3.3.3'
 $script:SettingsPath = Join-Path $script:AppDataRoot 'settings.json'
 $script:GitHubOwner = 'mertastudios'
 $script:GitHubRepoName = 'ArenaRobloxBridge'
@@ -373,7 +404,7 @@ $script:Shared = [hashtable]::Synchronized(@{
     ShotFolder      = $script:ShotFolder
     Port            = $script:Port
     DocsVersion     = '3.3'
-    AppVersion      = '3.3.2'
+    AppVersion      = '3.3.3'
     SettingsPath    = Join-Path $script:AppDataRoot 'settings.json'
     AccessKey       = $null
     RequestExit     = $false
@@ -471,7 +502,7 @@ function Find-RobloxStudio {
 function Get-PluginSource {
 @'
 --[[============================================================================
-  Arena Studio Bridge - Studio Plugin  (Version 3.3.2)
+  Arena Studio Bridge - Studio Plugin  (Version 3.3.3)
 
   Dieses Plugin verbindet ein Roblox-Studio-Fenster mit dem Programm
   "Arena Roblox Bridge" auf dem PC. Jedes Studio-Fenster bekommt eine eigene
@@ -540,7 +571,7 @@ local StudioTestService = nil
 pcall(function() StudioTestService = game:GetService("StudioTestService") end)
 
 local BASE_URL       = "__BASE_URL__"
-local ARENA_VERSION  = "3.3.2"
+local ARENA_VERSION  = "3.3.3"
 local POLL_WAIT      = 12      -- Sekunden Long-Poll (Befehle kommen sofort an)
 local HEARTBEAT_EVERY = 5      -- Sekunden
 local CHUNK_SIZE     = 48000   -- Bytes je Teilstueck einer Antwort
@@ -11123,7 +11154,7 @@ $xaml = @'
                         <Border Height="1" Background="{StaticResource Line}" Margin="18,14,18,4"/>
                         <StackPanel x:Name="SettingsCategories"/>
                         <Border Height="1" Background="{StaticResource Line}" Margin="18,8,18,12"/>
-                        <TextBlock x:Name="VersionFooter" Text="Arena Roblox Bridge - Version 3.3.2" Foreground="{StaticResource TextFaint}" FontSize="11" Margin="18,0,18,16"/>
+                        <TextBlock x:Name="VersionFooter" Text="Arena Roblox Bridge - Version 3.3.3" Foreground="{StaticResource TextFaint}" FontSize="11" Margin="18,0,18,16"/>
                     </StackPanel>
                 </ScrollViewer>
             </Border>
@@ -12602,6 +12633,9 @@ $window.Add_PreviewMouseDown({
 Initialize-SettingsAccordion
 
 $window.Add_Loaded({
+    # Das eigene Konsolenfenster erneut verstecken: Falls es sich beim Laden der
+    # Oberflaeche gezeigt hat (Start-Rennen), verschwindet es jetzt endgueltig.
+    Hide-ConsoleWindow
     $window.Opacity = 0
     $fade = [System.Windows.Media.Animation.DoubleAnimation]::new(0, 1, [System.TimeSpan]::FromMilliseconds(380))
     $window.BeginAnimation([System.Windows.Window]::OpacityProperty, $fade)

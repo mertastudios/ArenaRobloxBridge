@@ -16,6 +16,33 @@ param()
 
 $ErrorActionPreference = 'Stop'
 
+# Eigenes Konsolenfenster IMMER verstecken (ausser Diagnose-/Debug-Modus).
+# Verhindert, dass neben dem Programm ein leeres PowerShell-Fenster mit dem
+# Dateipfad (powershell.exe) in der Titelleiste offen bleibt. /debug setzt
+# ARENABRIDGE_DEBUG=1 und laesst die Konsole fuer Screenshots sichtbar.
+function Hide-ConsoleWindow {
+    if ($env:ARENABRIDGE_DEBUG -eq '1') { return }
+    try {
+        if (-not ('Arena.ConsoleHider' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace Arena {
+    public static class ConsoleHider {
+        [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+        [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    }
+}
+'@ -ErrorAction SilentlyContinue
+        }
+        $h = [Arena.ConsoleHider]::GetConsoleWindow()
+        if ($h -ne [IntPtr]::Zero) {
+            [void][Arena.ConsoleHider]::ShowWindow($h, 0)   # 0 = SW_HIDE
+        }
+    } catch {}
+}
+Hide-ConsoleWindow
+
 $logDir = Join-Path $env:LOCALAPPDATA 'ArenaRobloxBridge'
 $logFile = Join-Path $logDir 'startup-error.log'
 

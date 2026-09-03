@@ -1,11 +1,8 @@
 {
-  "version": "3.3.2",
+  "version": "3.3.3",
   "notes": [
-    "Startproblem behoben: In 'OPEN ME TO START.cmd' stand ein ungueltiger cmd.exe-Befehl - ein mehrzeiliger if-Klammerblock direkt hinter dem Verkettungsoperator ||. cmd.exe brach das Skript beim Parsen ab, das Fenster blitzte nur auf und schloss sich. Der Starter wurde komplett neu und einfach gebaut.",
-    "Starter bleibt bei JEDEM Fehler offen (Meldung + Pause). Er schliesst sich nur, wenn der Start geklappt hat.",
-    "Neuer Diagnose-Modus: 'OPEN ME TO START.cmd' /debug fuehrt alles sichtbar im Vordergrund aus und pausiert am Ende - ideal fuer Screenshots bei Problemen.",
-    "Kein VBS-Zwischenschritt mehr: Der Starter ruft PowerShell jetzt direkt und versteckt auf (kein wscript / Start-Bridge.vbs). Mark-of-the-Web/SmartScreen koennen den Start dadurch nicht mehr durch blockierte VBS-Dateien stoppen.",
-    "Kleiner Fehler in ArenaBridge.ps1 behoben: eine Meldung enthielt ein Apostroph innerhalb eines Apostroph-Textes ('ist 'place' optional') und haette beim Thema 'mehrere Places' einen Fehler geworfen.",
-    "README: Hinweis zum Entsperren der ZIP (Mark of the Web: Rechtsklick -> Eigenschaften -> Zulassen) vor dem Entpacken ergaenzt."
+    "Offenes PowerShell-Fenster behoben: Neben dem Programm blieb ein leeres PowerShell-Fenster offen (Titelleiste zeigte den Dateipfad powershell.exe), und beim Schliessen dieses Fensters schloss sich auch das Programm. Ursache war eine zu strenge Bedingung: Das Programm versteckte sein Konsolenfenster nur, wenn an der Konsole genau EIN Prozess hing. Bei Autostart, direktem Start oder Update-Neustart haengen aber oft mehrere Prozesse daran - dann blieb das Fenster dauerhaft stehen.",
+    "Das Programm versteckt sein eigenes Konsolenfenster jetzt IMMER und zuverlaessig, egal wie es gestartet wird (Doppelklick auf 'OPEN ME TO START.cmd', Autostart, Neustart). Zusaetzlich wird das Fenster nach dem Laden der Oberflaeche noch einmal endgueltig ausgeblendet. Es erscheint also kein separates PowerShell-Fenster mehr neben dem Programm.",
+    "Der Diagnose-/Debug-Modus ('OPEN ME TO START.cmd' /debug) zeigt die Konsole weiterhin sichtbar im Vordergrund, damit bei Problemen ein Screenshot moeglich ist."
   ]
 }
