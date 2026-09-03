@@ -1,0 +1,15 @@
+{
+  "version": "3.3.0",
+  "notes": [
+    "Kein Konsolenfenster mehr: Start nur noch ueber Start Bridge.vbs / OPEN ME TO START.cmd, das Programmfenster ist vom Konsolenfenster unabhaengig.",
+    "Doppelstart ohne Port-Fehler: Die alte Instanz schliesst sich, die neue uebernimmt Port und Tunnel.",
+    "Einstellungen als Kategorien (max. eine offen): Updates, Sonstiges (Neustart + Autostart), Key fuer alle Places (Prompt kopieren, Key zuruecksetzen, Lese-/Schreib-Modus) mit Multi-Place-Uebersicht /api/places.",
+    "Auto-Update ueber die GitHub-API im Hintergrund mit persistenter Benachrichtigung (Version + Aenderungen, OK zum Aktivieren).",
+    "Echter Play-Test: StudioTestService-Start (Fallback F5/F8), 60 s Wartezeit, Diagnose + Output bei fehlendem Spieler/Charakter/Client.",
+    "Skripte groesser 200 KB laufen ueber ScriptEditorService:UpdateSourceAsync; jeder Write wird verifiziert (Quelle + Compile, Rueckrollen bei Fehlern).",
+    "Uploads strikt 1-basiert mit complete-Pflicht; sourceRef auf unfertige Uploads wird abgelehnt.",
+    "Klarere Fehlercodes: TOO_LARGE, DRAFT_OPEN, COMPILE_ERROR (mit Zeile), STUDIO_TIMEOUT, MULTIPLE_PLACES u.a.",
+    "run_lua-Timeouts bis 300 s, neue Helfer (get_output mit sinceSeq, grep_scripts, list_scripts), Play benoetigt Studio-Fokus.",
+    "Der ...-Menuepunkt der Place-Zeile ist jetzt ein Toggle (offenes Menue schliesst sich beim erneuten Klick)."
+  ]
+}

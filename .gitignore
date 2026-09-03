@@ -1,0 +1,9 @@
+# Arena Roblox Bridge - lokale Artefakte niemals einchecken
+*.log
+*.tmp
+*.zip
+Thumbs.db
+Desktop.ini
+.vs/
+.idea/
+*.user

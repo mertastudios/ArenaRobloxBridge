@@ -1,5 +1,31 @@
-﻿# ============================================================================
-# Arena Roblox Bridge  -  Version 3.2
+﻿﻿﻿# ============================================================================
+# Arena Roblox Bridge  -  Version 3.3.0
+#
+# NEU IN VERSION 3.3.0 (Kurzfassung, Details in CHANGELOG.md):
+#   1.  KEIN KONSOLENFENSTER MEHR: Der Start erfolgt ueber "Start Bridge.vbs"
+#       (Doppelklick nach dem Entpacken). PowerShell laeuft versteckt und
+#       entkoppelt - es gibt nur noch das Programmfenster, und dieses ist vom
+#       Konsolenfenster unabhaengig.
+#   2.  DOPPELSTART OHNE PORT-FEHLER: Startet man das Programm, waehrend es
+#       bereits laeuft, wird die alte Instanz zum Schliessen aufgefordert und
+#       die neue uebernimmt Port und Tunnel.
+#   3.  EINSTELLUNGEN ALS KATEGORIEN (max. eine offen): Updates / Sonstiges
+#       (Neustart + Autostart) / Key fuer alle Places (Prompt, Key-Reset,
+#       Lese-/Schreib-Modus) mit Multi-Place-UEbersicht fuer die KI (/api/places).
+#   4.  AUTO-UPDATE ueber die GitHub-API: Das Programm prueft selbst auf neue
+#       Versionen, laedt alle Dateien im Hintergrund herunter, startet neu und
+#       zeigt eine persistente Update-Benachrichtigung (Version + Aenderungen)
+#       mit OK - bis OK geklickt wurde, erscheint sie bei jedem Start erneut.
+#   5.  PLAYTEST: Echter Play-Modus ueber StudioTestService (wenn verfuegbar),
+#       60 s Wartezeit, Diagnose wenn Spieler/Charakter/Client fehlen.
+#   6.  SKRIPTE > 200 KB: grosse Writes laufen ueber ScriptEditorService:
+#       UpdateSourceAsync; jeder Write wird verifiziert (Quelle + Compile).
+#   7.  Uploads (upload_text) mit strikter Chunk-Validierung (1-basiert,
+#       complete-Pflicht, kein sourceRef auf unfertige Uploads).
+#   8.  Fehlercodes und klare Fehlertexte (TOO_LARGE, DRAFT_OPEN, COMPILE_ERROR
+#       mit Zeile, STUDIO_TIMEOUT vs. RUNTIME_ERROR, MULTIPLE_PLACES ...).
+#   9.  run_lua-Timeouts bis 300 s, persistente Umgebung dokumentiert, neue
+#       Helfer (get_output, grep_scripts, list_scripts) und GET /api/places.
 #
 # WICHTIG ZUR DATEICODIERUNG (Umlaute):
 #   Diese Datei MUSS als "UTF-8 mit BOM" gespeichert sein. Windows PowerShell
@@ -8,10 +34,9 @@
 #   repariert sich das Skript beim nächsten Start selbst.
 #
 # DESIGN-REGEL FÜR DIES ESKRIPT:
-#   Die Bedienung, das Aussehen und die Animationen des Fensters sind NICHT
-#   veränderbar (das ist das Programm des Nutzers). Alle Änderungen in
-#   Version 3.2 (wie 3.1) betreffen AUSSCHLIESSLICH die Kommunikation mit der KI
-#   (Dokumentation, Tools, Fehler, Jobs, Ereignisse, Assets, Playtest).
+#   Bedienung und Aussehen duerfen auf Wunsch des Nutzers angepasst werden
+#   (ab Version 3.3 auch die Oberflaeche: Einstellungen als Kategorien usw.).
+#   Der Funktionskern (Kommunikation mit Studio und KI) bleibt jederzeit stabil.
 #
 # NEU IN DIESER VERSION (3.2) - BUGFIX-RELISE, Bedienung/Design unverändert:
 #   1.  PART-ERSTELLUNG REPARIERT: create_instance / bulk_create / clone /
@@ -272,6 +297,13 @@ $script:PlaceNames = @{}
 $script:RobloxStudioPath = $null
 $script:PluginInstalled = $false
 $script:LastTunnelMessage = ''
+$script:AppVersion = '3.3.0'
+$script:SettingsPath = Join-Path $script:AppDataRoot 'settings.json'
+$script:GitHubOwner = 'mertastudios'
+$script:GitHubRepoName = 'ArenaRobloxBridge'
+$script:UpdateInfoUrl = "https://raw.githubusercontent.com/$script:GitHubOwner/$script:GitHubRepoName/main/version.json"
+$script:UpdateZipUrl = "https://codeload.github.com/$script:GitHubOwner/$script:GitHubRepoName/zip/refs/heads/main"
+$script:UpdateCheckHours = 6
 $script:RuntimeLog = Join-Path $script:AppDataRoot 'runtime.log'
 $script:ShotFolder = Join-Path $script:AppDataRoot 'screenshots'
 $script:WindowNameCache = @()
@@ -309,6 +341,8 @@ $script:Shared = [hashtable]::Synchronized(@{
     BlobInfo        = [System.Collections.Concurrent.ConcurrentDictionary[string,string]]::new()
     # uploadId -> großer Text, den die KI hochgeladen hat
     Uploads         = [System.Collections.Concurrent.ConcurrentDictionary[string,string]]::new()
+    # uploadId -> true, sobald der Upload mit chunkIndex == chunkCount abgeschlossen wurde
+    UploadComplete  = [System.Collections.Concurrent.ConcurrentDictionary[string,bool]]::new()
     # sessionId -> Ereignisse (Benutzer hat Play gestartet usw.)
     Events          = [System.Collections.Concurrent.ConcurrentDictionary[string,object]]::new()
     Counters        = [System.Collections.Concurrent.ConcurrentDictionary[string,long]]::new()
@@ -321,7 +355,12 @@ $script:Shared = [hashtable]::Synchronized(@{
     LogFile         = $script:RuntimeLog
     ShotFolder      = $script:ShotFolder
     Port            = $script:Port
-    DocsVersion     = '3.2'
+    DocsVersion     = '3.3'
+    AppVersion      = '3.3.0'
+    SettingsPath    = Join-Path $script:AppDataRoot 'settings.json'
+    AccessKey       = $null
+    RequestExit     = $false
+    RequestExitAt   = $null
 })
 
 function Write-RuntimeLog {
@@ -415,7 +454,7 @@ function Find-RobloxStudio {
 function Get-PluginSource {
 @'
 --[[============================================================================
-  Arena Studio Bridge - Studio Plugin  (Version 3.2)
+  Arena Studio Bridge - Studio Plugin  (Version 3.3.0)
 
   Dieses Plugin verbindet ein Roblox-Studio-Fenster mit dem Programm
   "Arena Roblox Bridge" auf dem PC. Jedes Studio-Fenster bekommt eine eigene
@@ -478,13 +517,22 @@ local VirtualInputManager = nil
 pcall(function() VirtualInputManager = game:GetService("VirtualInputManager") end)
 local StudioService = nil
 pcall(function() StudioService = game:GetService("StudioService") end)
+local ScriptEditorService = nil
+pcall(function() ScriptEditorService = game:GetService("ScriptEditorService") end)
+local StudioTestService = nil
+pcall(function() StudioTestService = game:GetService("StudioTestService") end)
 
 local BASE_URL       = "__BASE_URL__"
-local ARENA_VERSION  = "3.2"
+local ARENA_VERSION  = "3.3.0"
 local POLL_WAIT      = 12      -- Sekunden Long-Poll (Befehle kommen sofort an)
 local HEARTBEAT_EVERY = 5      -- Sekunden
 local CHUNK_SIZE     = 48000   -- Bytes je Teilstueck einer Antwort
 local MAX_OUTPUT     = 6000    -- Zeilen im Ausgabespeicher
+-- Direktes Schreiben von LuaSourceContainer.Source ist in Studio auf etwa
+-- 200.000 Zeichen begrenzt. Alles Darueber geht ueber ScriptEditorService:
+-- UpdateSourceAsync (die Bridge routet die Groesse automatisch).
+local SCRIPT_SOURCE_LIMIT = 200000
+local SCRIPT_SOURCE_HARD  = 8000000 -- Roblox-Sicherheitsgrenze fuer einen Write
 
 -- ---------------------------------------------------------------------------
 -- Grundzustand
@@ -498,11 +546,13 @@ local connected      = false
 local defaultContext = "server"   -- fuer Laufzeit-Befehle im Play-Modus
 
 local capabilities = {
-    virtualInput   = (VirtualInputManager ~= nil),
-    changeHistory  = (ChangeHistoryService ~= nil),
-    insertService  = (InsertService ~= nil),
-    solidModeling  = true,
-    clientAgent    = false,
+    virtualInput     = (VirtualInputManager ~= nil),
+    changeHistory    = (ChangeHistoryService ~= nil),
+    insertService    = (InsertService ~= nil),
+    solidModeling    = true,
+    clientAgent      = false,
+    scriptEditor     = (ScriptEditorService ~= nil),
+    studioTestService= (StudioTestService ~= nil),
 }
 
 -- ---------------------------------------------------------------------------
@@ -1255,6 +1305,257 @@ local function hashString(text)
     return string.format("%08x", hash) .. "-" .. tostring(#text)
 end
 
+-- ---------------------------------------------------------------------------
+-- SKRIPT-SCHREIBPFAD (ab 3.3): GROESSEN-ROUTING + VERIFIZIERUNG
+--   * <= 200.000 Zeichen : direkter Weg (LuaSourceContainer.Source)
+--   * >  200.000 Zeichen : ScriptEditorService:UpdateSourceAsync
+--   * Nach jedem Write: tatsaechliche Quelle zuruecklesen UND Compile pruefen.
+--     Success heisst NUR: Editor-Quelle == gewuenschte Quelle UND sie kompiliert.
+-- ---------------------------------------------------------------------------
+
+-- Reine Syntaxpruefung im Speicher - NICHTS wird ausgefuehrt.
+local function compileSource(source)
+    if type(load) == "function" then
+        local ok, fnOrErr = pcall(function() return load(source, "=arena_compile", "t") end)
+        if ok then
+            if type(fnOrErr) == "function" then return true end
+            return nil, tostring(fnOrErr)
+        end
+        return nil, tostring(fnOrErr)
+    end
+    if type(loadstring) == "function" then
+        local ok, fnOrErr = pcall(function() return loadstring(source, "=arena_compile") end)
+        if ok then
+            if type(fnOrErr) == "function" then return true end
+            return nil, tostring(fnOrErr)
+        end
+        return nil, tostring(fnOrErr)
+    end
+    return nil, "COMPILER_UNAVAILABLE"
+end
+
+-- Roblox kompiliert LuaSourceContainer beim Setzen der Quelle: ein temporaeres
+-- ModuleScript wirft bei Syntaxfehlern (mit Zeilennummer), OHNE den Code
+-- auszufuehren (kein require). Rueckgabe: true | nil, "SYNTAX: <meldung>",
+-- zeile | nil, "PROBE_UNAVAILABLE: <grund>".
+local function compileViaModuleSet(source)
+    if ScriptEditorService == nil and #source > SCRIPT_SOURCE_LIMIT then
+        return nil, "PROBE_UNAVAILABLE: Die Quelle hat " .. tostring(#source) .. " Zeichen (ueber " .. tostring(SCRIPT_SOURCE_LIMIT) .. "), und auf dieser Studio-Version ist weder load/loadstring noch ScriptEditorService verfuegbar."
+    end
+    local holder = Instance.new("Folder")
+    holder.Name = "__ArenaCompileBox"
+    local mod = Instance.new("ModuleScript")
+    mod.Name = "CompileProbe"
+    mod.Parent = holder
+    holder.Parent = ReplicatedStorage
+    local okSet = false
+    local errSet = nil
+    if #source <= SCRIPT_SOURCE_LIMIT then
+        -- Direkter Setter: kompiliert sofort, Syntaxfehler werfen hier und
+        -- sind damit echte, beweisbare Compile-Fehler.
+        okSet, errSet = pcall(function() mod.Source = source end)
+        holder:Destroy()
+        if not okSet then
+            local line = string.match(tostring(errSet), ":(%d+):")
+            return nil, "SYNTAX: " .. tostring(errSet), (line and tonumber(line) or nil)
+        end
+        return true
+    end
+    -- Grosser Text: nur der Editor-Weg kann ihn ueberhaupt annehmen. Ein
+    -- Fehlschlag hier ist ein API-Problem (Probe), KEIN Syntaxbeweis - der
+    -- Editor nimmt auch fehlerhafte Drafts an.
+    if ScriptEditorService == nil or ScriptEditorService.UpdateSourceAsync == nil then
+        holder:Destroy()
+        return nil, "PROBE_UNAVAILABLE: Die Quelle hat " .. tostring(#source) .. " Zeichen (ueber " .. tostring(SCRIPT_SOURCE_LIMIT) .. "), und auf dieser Studio-Version ist weder load/loadstring noch ScriptEditorService verfuegbar."
+    end
+    okSet, errSet = pcall(function()
+        ScriptEditorService:UpdateSourceAsync(mod, function(cur) return source end)
+    end)
+    holder:Destroy()
+    if not okSet then
+        return nil, "PROBE_UNAVAILABLE: ScriptEditorService:UpdateSourceAsync konnte den Probe-Modul nicht annehmen: " .. tostring(errSet)
+    end
+    return true
+end
+
+-- Die Quelle, die Studio wirklich verwenden wuerde: Der Editor (GetEditorSource)
+-- hat Vorrang vor der Property, damit offene Drafts nie "luegen".
+local function trueSourceOf(inst)
+    if ScriptEditorService ~= nil then
+        local ok, src = pcall(function() return ScriptEditorService:GetEditorSource(inst) end)
+        if ok and type(src) == "string" then return src end
+    end
+    local ok, src = pcall(function() return inst.Source end)
+    if ok and type(src) == "string" then return src end
+    return ""
+end
+
+-- Offener Editor mit ungespeicherten Aenderungen (Draft)?
+local function isDraftOpen(inst)
+    if ScriptEditorService == nil or ScriptEditorService.FindScriptDocument == nil then return false end
+    local okDoc, doc = pcall(function() return ScriptEditorService:FindScriptDocument(inst) end)
+    if not okDoc or doc == nil then return false end
+    local propSrc = nil
+    local okP = pcall(function() propSrc = inst.Source end)
+    if not okP or type(propSrc) ~= "string" then return false end
+    return (trueSourceOf(inst) ~= propSrc)
+end
+
+-- Stellt den alten Stand eines Skripts wieder her (fuer Rueckrollen).
+local function rollbackSource(inst, oldSource, openDoc)
+    if oldSource == nil then return end
+    pcall(function()
+        if ScriptEditorService ~= nil and ScriptEditorService.UpdateSourceAsync ~= nil and (#oldSource > SCRIPT_SOURCE_LIMIT or openDoc ~= nil) then
+            ScriptEditorService:UpdateSourceAsync(inst, function(cur) return oldSource end)
+        else
+            inst.Source = oldSource
+        end
+    end)
+end
+
+-- Zentrale Schreibfunktion: routed die Groesse, schreibt, liest zurueck und
+-- kompiliert. Rueckgabe: true, { method, verified, compileOk, compileError?,
+-- compileLine?, bytes, hash } | nil, "FEHLERCODE: nachricht".
+-- Regeln:
+--   * > SCRIPT_SOURCE_LIMIT oder offenes Skript-Dokument -> Editor-Weg
+--     (ScriptEditorService:UpdateSourceAsync); bei Bedarf wird das Dokument
+--     vorher geoeffnet (OpenScriptDocumentAsync).
+--   * verified = true nur, wenn die zurueckgelesene Quelle == newSource.
+--   * compileOk = true nur bei nachgewiesenem Compile. Ein echter
+--     Syntaxfehler rollt zurueck (VERIFY_FAILED). Kann die Umgebung den
+--     Compile nicht pruefen (PROBE_UNAVAILABLE), wird NICHT zurueckgerollt,
+--     aber compileOk=false + compileError zurueckgegeben.
+local function writeSource(inst, newSource, force)
+    if type(newSource) ~= "string" then return nil, "BAD_ARGS: source is not a string." end
+    if #newSource > SCRIPT_SOURCE_HARD then
+        return nil, "TOO_LARGE:" .. tostring(#newSource) .. " Zeichen ueberschreiten die Sicherheitsgrenze von " .. tostring(SCRIPT_SOURCE_HARD) .. "."
+    end
+    if force ~= true and isDraftOpen(inst) then
+        return nil, "DRAFT_OPEN: Das Skript ist im Editor geoeffnet und hat ungespeicherte Aenderungen. Ein Write wuerde diesen Draft ueberschreiben - wiederhole mit force=true, wenn das gewollt ist."
+    end
+
+    local oldSource = nil
+    pcall(function() oldSource = inst.Source end)
+
+    local openDoc = nil
+    if ScriptEditorService ~= nil and ScriptEditorService.FindScriptDocument ~= nil then
+        pcall(function() openDoc = ScriptEditorService:FindScriptDocument(inst) end)
+    end
+
+    local method = "direct"
+    if #newSource > SCRIPT_SOURCE_LIMIT then method = "editor" end
+    if openDoc ~= nil then method = "editor" end
+
+    if method == "editor" then
+        if ScriptEditorService == nil or ScriptEditorService.UpdateSourceAsync == nil then
+            -- Ohne Editor-API: direkter Weg nur bis zur Grenze moeglich.
+            if #newSource <= SCRIPT_SOURCE_LIMIT then
+                local okS, errS = pcall(function() inst.Source = newSource end)
+                if not okS then return nil, "WRITE_FAILED:" .. tostring(errS) end
+                method = "direct"
+            else
+                return nil, "WRITE_FAILED: Quelle > " .. tostring(SCRIPT_SOURCE_LIMIT) .. " Zeichen, aber ScriptEditorService/UpdateSourceAsync fehlt auf dieser Studio-Version."
+            end
+        else
+            -- Sicherstellen, dass ein Skript-Dokument existiert (UpdateSourceAsync
+            -- arbeitet auf dem Dokument des Editors). Ist keins offen, oeffnen.
+            if openDoc == nil and ScriptEditorService.OpenScriptDocumentAsync ~= nil then
+                local okOpen = pcall(function()
+                    openDoc = ScriptEditorService:OpenScriptDocumentAsync(inst)
+                end)
+                if not okOpen then openDoc = nil end
+            end
+            local okU, errU = pcall(function()
+                ScriptEditorService:UpdateSourceAsync(inst, function(current)
+                    return newSource
+                end)
+            end)
+            if not okU then
+                return nil, "WRITE_FAILED: UpdateSourceAsync fehlgeschlagen: " .. tostring(errU)
+            end
+        end
+    else
+        local okS, errS = pcall(function() inst.Source = newSource end)
+        if not okS then
+            if ScriptEditorService ~= nil and ScriptEditorService.UpdateSourceAsync ~= nil and #newSource > SCRIPT_SOURCE_LIMIT then
+                local okU2, errU2 = pcall(function()
+                    ScriptEditorService:UpdateSourceAsync(inst, function(cur) return newSource end)
+                end)
+                if okU2 then
+                    method = "editor"
+                else
+                    return nil, "WRITE_FAILED:" .. tostring(errS) .. " (UpdateSourceAsync: " .. tostring(errU2) .. ")"
+                end
+            else
+                return nil, "WRITE_FAILED:" .. tostring(errS)
+            end
+        end
+    end
+
+    -- Verifizieren: Editor/Property zuruecklesen (kurze Wartezeit fuer den
+    -- Editor-Replikationspfad einraeumen).
+    local actual = trueSourceOf(inst)
+    local verified = (actual == newSource)
+    local waited = 0
+    while not verified and waited < 20 do
+        task.wait(0.04)
+        waited = waited + 1
+        actual = trueSourceOf(inst)
+        if actual == newSource then verified = true end
+    end
+
+    if not verified then
+        rollbackSource(inst, oldSource, openDoc)
+        return nil, "VERIFY_FAILED: die zurueckgelesene Quelle entspricht nicht der gewuenschten (der vorherige Stand wurde wiederhergestellt)"
+    end
+
+    -- Compile pruefen (ohne auszufuehren). Echte Syntaxfehler rollen zurueck;
+    -- wenn die Umgebung den Compile nicht pruefen kann, bleibt der (gleiche)
+    -- Write bestehen und wird als compileOk=false gemeldet.
+    -- Compile pruefen (ohne auszufuehren).
+    --   proven  = Compile nachgewiesen (ok) ODER echter Syntaxfehler (rollt zurueck)
+    --   unknown = Umgebung kann den Compile nicht pruefen (kein Rueckrollen,
+    --             aber compileOk=false + compileError in der Antwort)
+    local compileOk = false
+    local compileError = nil
+    local compileLine = nil
+    local proven = false
+    local compiled, errC, lnC = compileSource(newSource)
+    if compiled then
+        compileOk = true
+        proven = true
+    elseif errC ~= "COMPILER_UNAVAILABLE" then
+        compileError = errC
+        compileLine = lnC
+        proven = true
+    else
+        local c2, err2, ln2 = compileViaModuleSet(newSource)
+        if c2 then
+            compileOk = true
+            proven = true
+        elseif string.sub(err2, 1, 7) == "SYNTAX:" then
+            compileError = string.sub(err2, 8)
+            compileLine = ln2
+            proven = true
+        else
+            compileError = err2
+        end
+    end
+
+    if proven and not compileOk then
+        rollbackSource(inst, oldSource, openDoc)
+        local linePart = ""
+        if compileLine then linePart = " (Zeile " .. tostring(compileLine) .. ")" end
+        return nil, "VERIFY_FAILED: Compile-Fehler" .. linePart .. ": " .. tostring(compileError) .. " (der vorherige Stand wurde wiederhergestellt)"
+    end
+
+    local details = { method = method, verified = true, compileOk = compileOk, compileLine = compileLine, bytes = #newSource, hash = hashString(newSource) }
+    if compileError then details.compileError = compileError end
+    if not compileOk then
+        details.warning = "Der Write wurde verifiziert (Quelle stimmt ueberein), aber die Compile-Pruefung war auf dieser Studio-Version nicht moeglich: " .. tostring(compileError) .. ". Pruefe mit get_script { checkCompile = true } oder compile_check, sobald die Umgebung es zulaesst."
+    end
+    return true, details
+end
 local function splitLines(text)
     local lines = {}
     local position = 1
@@ -2125,6 +2426,72 @@ end
 -- Benutzer-Erkennung nicht KI-Bewegung als Benutzer-Bewegung meldet).
 local aiMoveUntil = 0
 
+-- Ab 3.3: echte Tests koennen ueber den StudioTestService laufen
+-- (ExecutePlayModeAsync / ExecuteRunModeAsync). Der Aufruf blockiert bis zum
+-- Testende, deshalb laeuft er in einem eigenen Task. Fallback bleibt der
+-- klassische Weg (F5/F8 per VirtualInputManager).
+local bridgeTestSession = nil
+
+local function testServiceStart(mode)
+    if StudioTestService == nil then return false end
+    local fn = nil
+    if mode == "run" then
+        fn = StudioTestService.ExecuteRunModeAsync
+    elseif mode == "play" then
+        fn = StudioTestService.ExecutePlayModeAsync
+    end
+    if type(fn) ~= "function" then return false end
+    bridgeTestSession = { mode = mode, at = os.time() }
+    task.spawn(function()
+        local okRun, result = pcall(function()
+            return fn(StudioTestService, { startedByBridge = true, mode = mode })
+        end)
+        -- Erst wenn der Test endet (EndTest oder manueller Stop) kehrt der
+        -- Aufruf zurueck. Danach ist die Sitzung beendet.
+        bridgeTestSession = nil
+    end)
+    return true
+end
+
+local function testServiceStop()
+    if bridgeTestSession == nil or StudioTestService == nil or StudioTestService.EndTest == nil then
+        return false
+    end
+    local ok = pcall(function() StudioTestService:EndTest("stopped by bridge") end)
+    bridgeTestSession = nil
+    return ok
+end
+
+-- Was koennte den Teststart blockieren? (Fokus/Modals lassen sich nicht per
+-- API auslesen - deshalb werden alle API-sichtbaren Zustaende genannt.)
+local function blockedByReport()
+    local parts = {}
+    local function add(name, value)
+        parts[#parts + 1] = name .. "=" .. tostring(value)
+    end
+    add("mode", currentMode())
+    add("running", RunService:IsRunning())
+    if StudioTestService ~= nil and StudioTestService.EditModeActive ~= nil then
+        local editActive = "?"
+        pcall(function() editActive = StudioTestService.EditModeActive end)
+        add("editModeActive", editActive)
+    end
+    local selCount = 0
+    pcall(function() selCount = #Selection:Get() end)
+    add("selectionCount", selCount)
+    local ts = nil
+    pcall(function() ts = game:GetService("TestService") end)
+    if ts ~= nil then
+        local running = "?"
+        pcall(function() running = ts:IsRunning() end)
+        add("testServiceRunning", running)
+    end
+    local players = 0
+    pcall(function() players = #Players:GetPlayers() end)
+    add("players", players)
+    return table.concat(parts, "; ")
+end
+
 local function startPlay(mode)
     mode = string.lower(tostring(mode or "play"))
     if RunService:IsRunning() then
@@ -2133,50 +2500,73 @@ local function startPlay(mode)
     aiPlayIntent = { action = "start", at = os.time() }
 
     local warnings = {}
+    local startedViaService = testServiceStart(mode)
     local usedShortcut = false
-    if VirtualInputManager ~= nil then
-        local key = "F5"
-        if mode == "run" then key = "F8" end
-        local okKey = sendKey(key, 0.06, {})
-        usedShortcut = okKey == true
+
+    if not startedViaService then
+        if VirtualInputManager ~= nil then
+            local key = "F5"
+            if mode == "run" then key = "F8" end
+            usedShortcut = sendKey(key, 0.06, {}) == true
+        end
+        if not usedShortcut then
+            table.insert(warnings, "StudioTestService und VirtualInputManager sind nicht verfuegbar. Fallback: RunService:Run() - das startet eine RUN-Simulation im Edit-Place; beim Stoppen wird der Place NICHT automatisch wiederhergestellt.")
+            local okRun = pcall(function() RunService:Run() end)
+            if not okRun then
+                return { ok = false, code = "PLAY_FALLBACK_RUN", error = "Could not start the test. Ask the user to press Play in Studio. Zustand: " .. blockedByReport() }
+            end
+        end
+    else
+        table.insert(warnings, "Test wurde ueber den StudioTestService gestartet (echter " .. mode .. "-Test).")
     end
 
-    if not usedShortcut then
-        table.insert(warnings, "VirtualInputManager was not available, so the Studio shortcut could not be used. Falling back to RunService:Run() - this starts a RUN simulation inside the edit place, and stopping it will NOT restore the place automatically.")
-        local okRun = pcall(function() RunService:Run() end)
-        if not okRun then
-            return { ok = false, code = "PLAY_FALLBACK_RUN", error = "Could not start the test. Ask the user to press Play in Studio." }
+    -- Langer Atem (ab 3.3: 60 s statt 15 s)
+    local reached = waitForState(true, 60)
+    if not reached then
+        -- Wenn der Test ueber den StudioTestService laeuft, kann EditModeActive
+        -- bereits false sein, waehrend IsRunning() im Plugin noch nicht umspringt.
+        local editActive = true
+        if StudioTestService ~= nil then
+            pcall(function() editActive = StudioTestService.EditModeActive end)
+        end
+        if editActive == false then
+            reached = true
+            table.insert(warnings, "IsRunning() meldet noch nicht true, aber EditModeActive=false => der Test laeuft. Die Bridge wartet weiter auf den Player.")
         end
     end
-
-    local reached = waitForState(true, 15)
     if not reached then
+        local diag = blockedByReport()
+        if startedViaService then pcall(function() StudioTestService:EndTest("bridge aborted: no state change") end) end
         return {
             ok = false,
-            code = "PLAY_FALLBACK_RUN",
-            error = "Studio did not enter play mode within 15 seconds. Possible reasons: the Studio window is not focused, or a dialog is open.",
+            code = "PLAY_NOT_STARTED",
+            error = "Studio ist nicht in den Testmodus gewechselt (60 s). Mögliche Blocker: Das Studio-Fenster hat keinen Fokus, ein Dialog/Modal ist offen, oder ein Skript haengt im Edit-Modus.",
+            diagnostics = diag,
             state = playState(),
             warnings = warnings,
+            advice = "Fokus auf das Studio-Fenster legen, offene Dialoge/Menues schliessen und play_start wiederholen. Das hier ist KEIN Lua-Fehler deines Codes.",
         }
     end
     task.wait(0.6)
     ensureRuntimeHelpers()
     local result = { ok = true, state = playState(), warnings = warnings, note = "Test is running. Persistent edits are blocked until you call play_stop." }
-    if not usedShortcut then
+    if not startedViaService and not usedShortcut then
         result.code = "PLAY_FALLBACK_RUN"
-        table.insert(warnings, "The real Play shortcut could not be pressed, so Run mode started instead (no player). Retry with the Studio window focused to get a real player.")
+        table.insert(warnings, "Der echte Play-Shortcut konnte nicht gedrueckt werden, daher lief der Run-Modus (kein Player). Mit fokussiertem Studio-Fenster erneut versuchen, um einen echten Player zu bekommen.")
     end
 
     local actualMode = currentMode()
-    if mode == "play" and actualMode == "play" then
-        -- ECHTER Play-Modus: warten bis Player + Charakter + Client-Agent da sind.
+    if mode == "play" and (actualMode == "play" or startedViaService) then
+        -- ECHTER Play-Modus: warten bis Player + Charakter + Client-Agent da sind
+        -- (bis zu 60 s, mit Zwischen-Diagnose).
         local player = nil
         local character = nil
         local humanoid = nil
         local root = nil
         local agentOk = false
         local waited = 0
-        while waited < 20 do
+        local lastDiagnosis = nil
+        while waited < 60 do
             player = Players:GetPlayers()[1]
             character = player and player.Character
             humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -2188,16 +2578,21 @@ local function startPlay(mode)
                     break
                 end
             end
+            if waited % 10 == 0 then
+                lastDiagnosis = { player = (player ~= nil), character = (character ~= nil), humanoid = (humanoid ~= nil), root = (root ~= nil), clientAgent = agentOk }
+            end
             task.wait(0.5)
             waited = waited + 0.5
         end
         if player == nil or character == nil or root == nil then
-            local recent = readOutput({ limit = 30, onlyErrors = true })
+            local recent = readOutput({ limit = 40, onlyErrors = true })
             return {
                 ok = false,
                 code = "PLAY_NO_PLAYER",
-                error = "Play mode started, but no player character appeared within 20 seconds.",
+                error = "Play mode started, but no player character appeared within 60 seconds.",
+                missing = { player = (player == nil), character = (character == nil), humanoid = (humanoid == nil), root = (root == nil), clientAgent = not agentOk },
                 recentErrors = recent.lines,
+                diagnostics = blockedByReport(),
                 state = playState(),
                 advice = "Check recentErrors for spawn problems (custom spawn systems, data loading, death loops). Call play_stop, look at the errors, fix the cause, then play_start again.",
             }
@@ -2224,24 +2619,36 @@ local function startPlay(mode)
 end
 
 local function stopPlay()
-    if not RunService:IsRunning() then
+    if not RunService:IsRunning() and bridgeTestSession == nil then
         return { ok = true, alreadyStopped = true, state = playState() }
     end
     aiPlayIntent = { action = "stop", at = os.time() }
 
     local warnings = {}
+    local usedService = testServiceStop()
     local usedShortcut = false
-    if VirtualInputManager ~= nil then
-        usedShortcut = sendKey("F5", 0.06, { "LeftShift" }) == true
+    if not usedService then
+        if VirtualInputManager ~= nil then
+            usedShortcut = sendKey("F5", 0.06, { "LeftShift" }) == true
+        end
+        if not usedShortcut then
+            table.insert(warnings, "Studio shortcut not available; used RunService:Stop(). Changes made during the test may remain in the place - check the place before saving.")
+            pcall(function() RunService:Stop() end)
+        end
+    else
+        table.insert(warnings, "Test wurde ueber den StudioTestService beendet (EndTest).")
     end
-    if not usedShortcut then
-        table.insert(warnings, "Studio shortcut not available; used RunService:Stop(). Changes made during the test may remain in the place - check the place before saving.")
-        pcall(function() RunService:Stop() end)
-    end
-    local reached = waitForState(false, 15)
+    local reached = waitForState(false, 60)
     cleanupRuntimeHelpers()
     if not reached then
-        return { ok = false, error = "Studio is still running after 15 seconds.", state = playState(), warnings = warnings }
+        local editActive = true
+        if StudioTestService ~= nil then
+            pcall(function() editActive = StudioTestService.EditModeActive end)
+        end
+        if editActive == true then reached = true end
+    end
+    if not reached then
+        return { ok = false, error = "Studio is still running after 60 seconds. Zustand: " .. blockedByReport(), state = playState(), warnings = warnings }
     end
     return { ok = true, state = playState(), warnings = warnings, note = "Test stopped. The place is back in edit mode - persistent edits are allowed again." }
 end
@@ -3981,7 +4388,26 @@ tools.get_script = function(args)
     if not inst:IsA("LuaSourceContainer") then
         return fail("'" .. inst.Name .. "' is a " .. inst.ClassName .. ", not a script.")
     end
-    local source = inst.Source
+
+    -- editor=true: die Editor-Quelle (Draft) zurueckgeben; sonst die Quelle,
+    -- die Studio beim Ausfuehren wirklich verwenden wuerde.
+    local source = trueSourceOf(inst)
+    local editorOpen = false
+    local draftDirty = false
+    local propSource = nil
+    if ScriptEditorService ~= nil then
+        if ScriptEditorService.FindScriptDocument ~= nil then
+            local okDoc, doc = pcall(function() return ScriptEditorService:FindScriptDocument(inst) end)
+            editorOpen = (okDoc and doc ~= nil)
+        end
+        local okP = pcall(function() propSource = inst.Source end)
+        if args.editor == true then
+            local okE, editorText = pcall(function() return ScriptEditorService:GetEditorSource(inst) end)
+            if okE and type(editorText) == "string" then source = editorText end
+        end
+        if okP and type(propSource) == "string" and source ~= propSource then draftDirty = true end
+    end
+
     local lines = splitLines(source)
     local startLine = tonumber(args.startLine) or 1
     local endLine = tonumber(args.endLine) or #lines
@@ -3998,18 +4424,40 @@ tools.get_script = function(args)
     end
     local text = table.concat(selected, "\n")
 
-    return ok({
-        id         = idOf(inst),
-        path       = pathOf(inst),
-        className  = inst.ClassName,
-        totalLines = #lines,
-        totalBytes = #source,
-        startLine  = startLine,
-        endLine    = endLine,
-        hash       = hashString(source),
-        source     = text,
-        hint       = "Use patch_script with small unique snippets instead of rewriting the whole file. Pass the hash as expectHash to make sure nobody changed the script in between.",
-    })
+    local result = {
+        id          = idOf(inst),
+        path        = pathOf(inst),
+        className   = inst.ClassName,
+        disabled    = pcall(function() return inst.Disabled ~= false end) and (inst.Disabled == true),
+        totalLines  = #lines,
+        totalBytes  = #source,
+        startLine   = startLine,
+        endLine     = endLine,
+        hash        = hashString(source),
+        source      = text,
+        editorOpen  = editorOpen,
+        draftDirty  = draftDirty,
+        hint        = "Use patch_script with small unique snippets instead of rewriting the whole file. Pass the hash as expectHash to make sure nobody changed the script in between. Groesse > 200k wird beim Schreiben automatisch ueber ScriptEditorService:UpdateSourceAsync geroutet (kein manueller Workaround noetig).",
+    }
+    if args.checkCompile == true then
+        local compiled, errC, lnC = compileSource(source)
+        if not compiled and errC == "COMPILER_UNAVAILABLE" then
+            compiled, errC, lnC = compileViaModuleSet(source)
+        end
+        if compiled == true then
+            result.compiled = true
+        elseif errC and string.sub(errC, 1, 17) == "PROBE_UNAVAILABLE:" then
+            -- Compile konnte in dieser Umgebung nicht geprueft werden:
+            -- nicht als Fehler ausgeben, sondern als unbekannt (null).
+            result.compiled = nil
+            result.compileUnknown = errC
+        else
+            result.compiled = false
+            result.compileError = errC
+            result.compileLine = lnC
+        end
+    end
+    return ok(result)
 end
 
 tools.find_in_script = function(args)
@@ -4039,23 +4487,45 @@ tools.set_script_source = function(args)
     if not inst then return fail(err) end
     if not inst:IsA("LuaSourceContainer") then return fail("Not a script.") end
     local newSource = tostring(args.source or "")
-    local oldSource = inst.Source
-    if args.expectHash and args.expectHash ~= hashString(oldSource) then
-        return fail("The script changed since you read it (hash mismatch). Read it again with get_script before writing.", { currentHash = hashString(oldSource) })
+    local oldSource = nil
+    pcall(function() oldSource = inst.Source end)
+    if args.expectHash and args.expectHash ~= hashString(oldSource or "") then
+        return fail("The script changed since you read it (hash mismatch). Read it again with get_script before writing.", { currentHash = hashString(oldSource or "") })
     end
-    inst.Source = newSource
+
+    -- Groesse wird intern geroutet (> 200k -> ScriptEditorService), jeder
+    -- Write wird verifiziert (zurueckgelesene Quelle + Compile).
+    local okW, details = writeSource(inst, newSource, (args.force == true))
+    if not okW then
+        if string.sub(details, 1, 11) == "DRAFT_OPEN:" then
+            return failCode("DRAFT_OPEN", details, { fix = "Wiederhole mit force=true, wenn der ungespeicherte Draft im Editor ueberschrieben werden soll." })
+        end
+        if string.sub(details, 1, 9) == "TOO_LARGE" then
+            return failCode("TOO_LARGE", details, {})
+        end
+        if string.sub(details, 1, 13) == "VERIFY_FAILED" then
+            return failCode("WRITE_UNVERIFIED", details, { fix = "Der vorherige Stand wurde wiederhergestellt. Pruefe mit get_script (editor=true), ob ein Draft offen ist, und lies die aktuelle Quelle neu." })
+        end
+        return failCode("WRITE_FAILED", details, {})
+    end
+
     waypoint("script " .. inst.Name)
     local warnings = nil
-    if #oldSource > 4000 and #newSource < #oldSource * 0.6 then
+    if oldSource and #oldSource > 4000 and #newSource < #oldSource * 0.6 then
         warnings = { "The new source is much shorter than the old one (" .. tostring(#oldSource) .. " -> " .. tostring(#newSource) .. " bytes). If that was not intended, use undo and switch to patch_script." }
     end
+    local actual = trueSourceOf(inst)
     return ok({
+        applied = true,
+        verified = details.verified,
+        compileOk = details.compileOk,
+        method = details.method,
         id = idOf(inst),
         path = pathOf(inst),
-        bytes = #newSource,
+        bytes = details.bytes,
         lines = select(2, string.gsub(newSource, "\n", "\n")) + 1,
-        previousBytes = #oldSource,
-        hash = hashString(newSource),
+        previousBytes = oldSource and #oldSource or 0,
+        hash = hashString(actual),
     }, warnings)
 end
 
@@ -4104,7 +4574,19 @@ tools.patch_script = function(args)
         })
     end
 
-    inst.Source = working
+    -- Verifizierter Write (ab 3.3): Success nur, wenn die zurueckgelesene
+    -- Editor-Quelle == working UND working kompiliert. Sonst: Rueckrollen.
+    local okW, details = writeSource(inst, working, (args.force == true))
+    if not okW then
+        if string.sub(details, 1, 11) == "DRAFT_OPEN:" then
+            return failCode("DRAFT_OPEN", details, { appliedBefore = report, fix = "Wiederhole mit force=true, wenn der ungespeicherte Draft im Editor ueberschrieben werden soll." })
+        end
+        if string.sub(details, 1, 13) == "VERIFY_FAILED" then
+            return failCode("WRITE_UNVERIFIED", details, { appliedBefore = report, fix = "Der vorherige Stand wurde wiederhergestellt. Pruefe mit get_script (editor=true), ob ein Draft offen ist." })
+        end
+        return failCode("WRITE_FAILED", details, { appliedBefore = report })
+    end
+
     waypoint("patch " .. inst.Name)
 
     local firstLine = nil
@@ -4112,16 +4594,21 @@ tools.patch_script = function(args)
         firstLine = entry.line or entry.startLine or entry.firstLine or entry.atLine
         if firstLine then break end
     end
+    local actual = trueSourceOf(inst)
 
     return ok({
+        applied = true,
+        verified = details.verified,
+        compileOk = details.compileOk,
+        method = details.method,
         id = idOf(inst),
         path = pathOf(inst),
         operations = report,
         oldLines = oldLines,
         newLines = newLines,
         lineDelta = newLines - oldLines,
-        bytes = #working,
-        hash = hashString(working),
+        bytes = details.bytes,
+        hash = hashString(actual),
         preview = firstLine and previewAround(working, firstLine, 4) or nil,
     })
 end
@@ -4132,20 +4619,39 @@ tools.insert_script = function(args)
     local className = args.className or "Script"
     local created = Instance.new(className)
     created.Name = args.name or className
-    local okSource = pcall(function() created.Source = tostring(args.source or "") end)
-    if not okSource then
+    local sourceText = tostring(args.source or "")
+    -- Zuerst pruefen, ob die Klasse ueberhaupt eine Source hat.
+    local probeOk = pcall(function() created.Source = "" end)
+    if not probeOk then
         created:Destroy()
         return fail("'" .. className .. "' has no Source property. Use Script, LocalScript or ModuleScript.")
+    end
+    if sourceText ~= "" then
+        -- Auch sehr grosse Quellen: writeSource routet intern auf den
+        -- ScriptEditorService-Pfad. force=true, weil ein neues Skript keinen
+        -- Draft haben kann (wir schreiben vor dem Parenten).
+        local okW, details = writeSource(created, sourceText, true)
+        if not okW then
+            created:Destroy()
+            if string.sub(details, 1, 9) == "TOO_LARGE" then
+                return failCode("TOO_LARGE", details, {})
+            end
+            return failCode("WRITE_FAILED", details, {})
+        end
     end
     if args.properties then applyProperties(created, args.properties) end
     created.Parent = parent
     waypoint("insert script")
+    local actual = trueSourceOf(created)
     return ok({
+        applied = true,
+        verified = (actual == sourceText),
         id = idOf(created),
         path = pathOf(created),
         className = created.ClassName,
-        lines = select(2, string.gsub(created.Source, "\n", "\n")) + 1,
-        hash = hashString(created.Source),
+        lines = select(2, string.gsub(actual, "\n", "\n")) + 1,
+        bytes = #actual,
+        hash = hashString(actual),
     })
 end
 
@@ -5254,10 +5760,6 @@ tools.apply_asset = function(args)
 end
 
 -- ------------------------- Ausgabefenster -----------------------------------
-tools.get_output = function(args)
-    return ok(readOutput(args))
-end
-
 tools.clear_output = function()
     outputBuffer = {}
     outputStart = outputSeq + 1
@@ -5316,7 +5818,16 @@ tools.play_start = function(args)
     if result.ok then
         return ok(result, result.warnings)
     end
-    return fail(result.error, { state = result.state, warnings = result.warnings })
+    -- code/diagnostics/advice/recentErrors/missing durchreichen, damit die KI
+    -- weiss, WAS blockiert und was zu tun ist (kein blinder Fehlertext).
+    local extra = { state = result.state, warnings = result.warnings }
+    if result.code then extra.code = result.code end
+    if result.diagnostics then extra.diagnostics = result.diagnostics end
+    if result.advice then extra.advice = result.advice end
+    if result.recentErrors then extra.recentErrors = result.recentErrors end
+    if result.missing then extra.missing = result.missing end
+    if result.note then extra.note = result.note end
+    return fail(result.error, extra)
 end
 
 tools.play_stop = function()
@@ -5324,7 +5835,11 @@ tools.play_stop = function()
     if result.ok then
         return ok(result, result.warnings)
     end
-    return fail(result.error, { state = result.state, warnings = result.warnings })
+    local extra = { state = result.state, warnings = result.warnings }
+    if result.code then extra.code = result.code end
+    if result.diagnostics then extra.diagnostics = result.diagnostics end
+    if result.advice then extra.advice = result.advice end
+    return fail(result.error, extra)
 end
 
 tools.play_pause = function()
@@ -5367,12 +5882,26 @@ local function requireExec(source, envTable)
     local mod = Instance.new("ModuleScript")
     mod.Name = "Box" .. tostring(requireBoxSeq)
     local header = "local _ENV = _G.__ARENA_BRIDGE_LUA_ENV__ or _G\n"
-    local okSet, setErr = pcall(function() mod.Source = header .. source end)
-    if not okSet then
-        return false, "Compile error: " .. tostring(setErr)
-    end
+    local fullSource = header .. source
+    -- Erst parenten, dann Quelle setzen: so funktioniert auch der Editor-Weg
+    -- (ScriptEditorService:UpdateSourceAsync) fuer sehr grosse Quellen.
     mod.Parent = holder
     holder.Parent = ReplicatedStorage
+    local okSet, setErr
+    if #fullSource <= SCRIPT_SOURCE_LIMIT then
+        okSet, setErr = pcall(function() mod.Source = fullSource end)
+    elseif ScriptEditorService ~= nil and ScriptEditorService.UpdateSourceAsync ~= nil then
+        okSet, setErr = pcall(function()
+            ScriptEditorService:UpdateSourceAsync(mod, function(cur) return fullSource end)
+        end)
+    else
+        holder:Destroy()
+        return false, "Compile error: Die Quelle hat " .. tostring(#fullSource) .. " Zeichen (ueber " .. tostring(SCRIPT_SOURCE_LIMIT) .. "), und auf dieser Studio-Version ist weder load/loadstring noch ScriptEditorService verfuegbar."
+    end
+    if not okSet then
+        holder:Destroy()
+        return false, "Compile error: " .. tostring(setErr)
+    end
     local okStash, stashErr = pcall(function() _G.__ARENA_BRIDGE_LUA_ENV__ = envTable end)
     local okReq, reqValue = xpcall(require, debug.traceback, mod)
     pcall(function() _G.__ARENA_BRIDGE_LUA_ENV__ = nil end)
@@ -5446,37 +5975,39 @@ end
 tools.compile_check = function(args)
     local source = tostring(args.source or args.code or "")
     if source == "" then return failCode("BAD_ARGS", "source missing.") end
-    if type(load) == "function" then
-        local okL, fnOrErr = pcall(function() return load(source, "arena_check", "t", luaEnv) end)
-        if okL then
-            if type(fnOrErr) == "function" then
-                return ok({ compiles = true, checked = "syntax only - the code was NOT executed" })
-            end
-            local line = string.match(tostring(fnOrErr), ":(%d+):")
-            return failCode("COMPILE_ERROR", tostring(fnOrErr), {
-                line = line and tonumber(line) or nil,
-                checked = "syntax only - the code was NOT executed",
-            })
-        end
+    -- Reine In-Memory-Pruefung (ab 3.3): NICHTS wird geschrieben und NICHTS
+    -- ausgefuehrt. Auch sehr grosse Quellen (> 200k) sind damit pruefbar.
+    local compiled, errC, lnC = compileSource(source)
+    if compiled then
+        return ok({ compiles = true, checked = "syntax only - the code was NOT executed", bytes = #source })
     end
-    -- FIX 3.2 Fallback (load() fehlt im Plugin-Kontext): Source auf ein
-    -- temporeres ModuleScript zu SETZEN kompiliert den Code, fuehrt ihn aber
-    -- NICHT aus - genau die reine Syntaxpruefung, die compile_check ist.
-    local holder = Instance.new("Folder")
-    holder.Name = "__ArenaCheckBox"
-    local tmp = Instance.new("ModuleScript")
-    tmp.Name = "Check"
-    tmp.Parent = holder
-    local okSet, setErr = pcall(function() tmp.Source = source end)
-    holder:Destroy()
-    if not okSet then
-        local line = string.match(tostring(setErr), ":(%d+):")
-        return failCode("COMPILE_ERROR", tostring(setErr), {
+    if errC ~= "COMPILER_UNAVAILABLE" then
+        local line = string.match(tostring(errC), ":(%d+):")
+        if not line and lnC then line = tostring(lnC) end
+        return failCode("COMPILE_ERROR", tostring(errC), {
             line = line and tonumber(line) or nil,
+            bytes = #source,
             checked = "syntax only - the code was NOT executed",
         })
     end
-    return ok({ compiles = true, checked = "syntax only - the code was NOT executed" })
+    -- Fallback: temporaeres Modul (Setter kompiliert ohne Ausfuehrung).
+    compiled, errC, lnC = compileViaModuleSet(source)
+    if compiled then
+        return ok({ compiles = true, checked = "syntax only - the code was NOT executed", bytes = #source })
+    end
+    local errText = tostring(errC)
+    local line = string.match(errText, ":(%d+):")
+    if not line and lnC then line = tostring(lnC) end
+    if string.sub(errText, 1, 7) == "SYNTAX:" then
+        return failCode("COMPILE_ERROR", errText, {
+            line = line and tonumber(line) or nil,
+            bytes = #source,
+            checked = "syntax only - the code was NOT executed",
+        })
+    end
+    return failCode("COMPILER_UNAVAILABLE", errText, {
+        fix = "Auf dieser Studio-Version sind load/loadstring gesperrt und die Compile-Probe ueber ein temporaeres Modul ist nicht moeglich (z.B. Quelle groesser als " .. tostring(SCRIPT_SOURCE_LIMIT) .. " ohne ScriptEditorService). Nutze run_lua (die Laufzeitumgebung meldet Compile-Fehler mit Zeile) oder verkleinere den zu pruefenden Abschnitt.",
+    })
 end
 
 tools.lua_state = function()
@@ -5925,6 +6456,110 @@ tools.send_input = function(args)
     end
     task.wait(tonumber(args.settleSeconds) or 0.2)
     return ok({ sent = results, output = readOutput({ limit = 25 }).lines })
+end
+
+-- Dienste, die list_scripts / grep_scripts standardmaessig durchsuchen.
+local SCRIPT_SEARCH_ROOTS = {
+    "ServerScriptService", "ServerStorage", "ReplicatedStorage",
+    "ReplicatedFirst", "StarterPlayer", "StarterGui", "Workspace", "Lighting",
+}
+
+tools.get_output = function(args)
+    -- Studio-Output seit einer Sequenz/Zeit: lesen statt den Nutzer zu fragen.
+    local options = { limit = tonumber(args.limit) or 120 }
+    if args.onlyErrors == true then options.onlyErrors = true end
+    if args.filter then options.filter = tostring(args.filter) end
+    if args.sinceSeq then options.since = tonumber(args.sinceSeq) end
+    local result = readOutput(options)
+    result.cursorSeq = outputSeq
+    result.nextSince = outputSeq
+    result.note = "Nutze 'sinceSeq' = nextSince im naechsten Aufruf, um nur neue Zeilen zu bekommen."
+    return ok(result)
+end
+
+
+tools.list_scripts = function(args)
+    -- Alle LuaSourceContainer des Places: path, className, disabled, bytes, lines.
+    local results = {}
+    local maxItems = tonumber(args.limit) or 300
+    local roots = args.roots or SCRIPT_SEARCH_ROOTS
+    local counter = 0
+    local function scan(parent, depth)
+        if counter >= maxItems then return end
+        for _, child in ipairs(parent:GetChildren()) do
+            if counter >= maxItems then return end
+            if child:IsA("LuaSourceContainer") and not child:IsA("LocalizationTable") then
+                counter = counter + 1
+                local src = ""
+                pcall(function() src = child.Source end)
+                table.insert(results, {
+                    id = idOf(child),
+                    path = pathOf(child),
+                    className = child.ClassName,
+                    disabled = (child.Disabled == true),
+                    bytes = #src,
+                    lines = select(2, string.gsub(src, "\n", "\n")) + 1,
+                })
+            end
+            if depth < (tonumber(args.depth) or 40) then
+                scan(child, depth + 1)
+            end
+        end
+    end
+    for _, rootName in ipairs(roots) do
+        if counter < maxItems then
+            local root = game:FindFirstChild(rootName)
+            if root then scan(root, 0) end
+        end
+    end
+    return ok({ scripts = results, count = counter, note = "list_scripts + grep_scripts arbeiten serverseitig ueber alle Services. Fuer Client-Skripte (StarterPlayer/StarterGui) genuegt die Auflistung - ausfuehren kann die Bridge nur im Server-/Edit-Kontext." })
+end
+
+tools.grep_scripts = function(args)
+    -- Suche in allen Skript-Quellen (Server + Starter*-Klient-Skripte sichtbar).
+    local needle = tostring(args.query or args.pattern or "")
+    if needle == "" then return failCode("BAD_ARGS", "query missing.") end
+    local plain = not (args.regex == true)
+    local caseInsensitive = (args.ignoreCase == true)
+    local maxMatches = tonumber(args.limit) or 60
+    local contextLines = tonumber(args.contextLines) or 1
+    local roots = args.roots or SCRIPT_SEARCH_ROOTS
+    local matches = {}
+    local scanned = 0
+    local function scanScript(inst)
+        if #matches >= maxMatches then return end
+        local src = nil
+        pcall(function() src = inst.Source end)
+        if type(src) ~= "string" then return end
+        scanned = scanned + 1
+        local hits = findOccurrences(src, needle, plain)
+        if #hits == 0 and caseInsensitive then
+            hits = findOccurrences(string.lower(src), string.lower(needle), true)
+        end
+        for _, hit in ipairs(hits) do
+            if #matches >= maxMatches then break end
+            table.insert(matches, {
+                path = pathOf(inst),
+                id = idOf(inst),
+                line = hit.line,
+                preview = previewAround(src, hit.line, contextLines),
+            })
+        end
+    end
+    local function scan(parent, depth)
+        for _, child in ipairs(parent:GetChildren()) do
+            if #matches >= maxMatches then break end
+            if child:IsA("LuaSourceContainer") and not child:IsA("LocalizationTable") then
+                scanScript(child)
+            end
+            if depth < (tonumber(args.depth) or 40) then scan(child, depth + 1) end
+        end
+    end
+    for _, rootName in ipairs(roots) do
+        local root = game:FindFirstChild(rootName)
+        if root then scan(root, 0) end
+    end
+    return ok({ matches = matches, count = #matches, scannedScripts = scanned, truncated = (#matches >= maxMatches), note = "Nur serverseitig sichtbare Skripte. Suche nach 'Script.Source' ist nicht noetig: nutze get_script + patch_script." })
 end
 
 tools.wait = function(args)
@@ -6584,13 +7219,80 @@ $script:BridgeHandlerScript = {
         return $null
     }
 
-    function Get-SessionForToken($token) {
-        if (-not $token) { return $null }
+    # Seit Version 3.3 gibt es ZWEI Arten der Authentifizierung:
+    #   a) Einen Platz-Token (wie bisher) - erreicht genau DIESES Studio-Fenster.
+    #   b) Den gemeinsamen Access-Key ("Key fuer alle Places") - erreicht ALLE
+    #      verbundenen Places. Welcher Place gemeint ist, wird ueber den
+    #      Parameter 'place' (placeId, placeName oder sessionId) gewaehlt.
+    function Get-SessionsForToken($token) {
+        $list = New-Object System.Collections.Generic.List[string]
+        if (-not $token) { return $list }
         $sessionId = $null
         if ($Shared.TokenSessions.TryGetValue($token, [ref]$sessionId)) {
-            return $sessionId
+            $list.Add($sessionId)
+            return $list
         }
-        return $null
+        $accessKey = $null
+        try { $accessKey = [string]$Shared['AccessKey'] } catch {}
+        if (-not [string]::IsNullOrWhiteSpace($accessKey) -and $token -eq $accessKey) {
+            foreach ($pair in $Shared.Sessions.GetEnumerator()) {
+                $list.Add([string]$pair.Key)
+            }
+        }
+        return $list
+    }
+
+    function Get-SessionSnapshot($sessionId) {
+        $entry = Get-SessionEntry $sessionId
+        if (-not $entry) { return $null }
+        $mode = 'readwrite'
+        [void]$Shared.AccessModes.TryGetValue($sessionId, [ref]$mode)
+        $presence = [int64]0
+        [void]$Shared.Presence.TryGetValue($sessionId, [ref]$presence)
+        $pollers = 0
+        [void]$Shared.Pollers.TryGetValue($sessionId, [ref]$pollers)
+        return @{
+            sessionId = [string]$entry.sessionId
+            placeId   = [string]$entry.placeId
+            placeName = [string]$entry.placeName
+            gameId    = [string]$entry.gameId
+            state     = $entry.state
+            accessMode = $mode
+            pluginVersion = [string]$entry.pluginVersion
+            lastSeen  = [int64]$entry.lastSeen
+            presence  = $presence
+            alive     = ($pollers -gt 0)
+        }
+    }
+
+    function Get-AllPlaceSnapshots($sessions) {
+        $result = New-Object System.Collections.Generic.List[object]
+        foreach ($sid in $sessions) {
+            $snap = Get-SessionSnapshot $sid
+            if ($snap) { $result.Add($snap) }
+        }
+        return ,$result
+    }
+
+    function Resolve-PlaceSession($sessions, $placeArg) {
+        # Rueckgabe: @{ status = 'ok'|'multiple'|'none'|'offline'; sessionId = ...; places = [...] }
+        $snaps = Get-AllPlaceSnapshots $sessions
+        if ($snaps.Count -eq 1) {
+            return @{ status = 'ok'; sessionId = [string]$snaps[0].sessionId; places = $snaps }
+        }
+        $wanted = [string]$placeArg
+        if (-not [string]::IsNullOrWhiteSpace($wanted)) {
+            $wantedLower = $wanted.ToLowerInvariant()
+            foreach ($snap in $snaps) {
+                $matches = ([string]$snap.sessionId -eq $wanted) -or
+                           ([string]$snap.placeId -eq $wanted) -or
+                           ([string]$snap.placeName -eq $wanted) -or
+                           ([string]$snap.placeName).ToLowerInvariant() -eq $wantedLower
+                if ($matches) { return @{ status = 'ok'; sessionId = [string]$snap.sessionId; places = $snaps } }
+            }
+            return @{ status = 'none'; sessionId = $null; places = $snaps }
+        }
+        return @{ status = 'multiple'; sessionId = $null; places = $snaps }
     }
 
     function Ensure-Queue($sessionId) {
@@ -7858,12 +8560,24 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
             errors = @() })
 
         # ---------------- SCRIPTS ----------------
-        $t.Add(@{ name = 'get_script'; category = 'scripts'; summary = 'Quelltext mit Zeilen + Hash.';
-            description = 'Liest ein Skript mit Zeilennummern, Gesamthaenge und Hash. Den Hash als expectHash an patch/set_script_source rueckgeben, damit niemand dazwischen aendert.';
-            params = @{ ref = @{ type = 'ref'; required = $true; default = '-'; description = 'Script/LocalScript/ModuleScript.' }; startLine = @{ type = 'int'; required = $false; default = '1'; description = '' }; endLine = @{ type = 'int'; required = $false; default = 'Ende'; description = '' }; withLineNumbers = @{ type = 'bool'; required = $false; default = 'true'; description = '' } };
-            returns = '{ id, path, className, totalLines, totalBytes, startLine, endLine, hash, source }';
-            example = @{ ref = '#77'; startLine = 1; endLine = 200 };
+        $t.Add(@{ name = 'get_script'; category = 'scripts'; summary = 'Skript-Quelle (Editor/Draft-fest) + Hash + Status.';
+            description = 'Liest die Quelle, die Studio wirklich verwenden wuerde (Draft-fest: editor=true liefert die ScriptEditorService-Editor-Quelle, sonst die gespeicherte/ausfuehrende Quelle). Meldet editorOpen/draftDirty, optional compiled/compileError/compileLine (checkCompile=true). Den Hash als expectHash an set_script_source/patch_script rueckgeben, damit niemand dazwischen aendert.';
+            params = @{ ref = @{ type = 'ref'; required = $false; default = '-'; description = 'ref ODER path.' }; path = @{ type = 'string'; required = $false; default = '-'; description = 'Pfad ab game, z.B. game.ServerScriptService.Foo.Server.' }; startLine = @{ type = 'int'; required = $false; default = '1'; description = '' }; endLine = @{ type = 'int'; required = $false; default = 'Ende'; description = '' }; withLineNumbers = @{ type = 'bool'; required = $false; default = 'true'; description = '' }; editor = @{ type = 'bool'; required = $false; default = 'false'; description = 'Editor-Quelle (Draft) statt gespeicherter Quelle.' }; checkCompile = @{ type = 'bool'; required = $false; default = 'false'; description = 'Zusaetzlich kompiliert die Quelle (kein Schreiben).' } };
+            returns = '{ id, path, className, disabled, totalLines, totalBytes, startLine, endLine, hash, source, editorOpen, draftDirty, compiled?, compileError?, compileLine? }';
+            example = @{ path = 'game.ServerScriptService.Server'; editor = $true; checkCompile = $true };
             errors = @('REF_NOT_FOUND', 'BAD_ARGS: kein Skript.') })
+        $t.Add(@{ name = 'list_scripts'; category = 'scripts'; summary = 'Alle Skripte des Places auflisten (Server + Starter-*).';
+            description = 'Durchsucht ServerScriptService, ServerStorage, ReplicatedStorage, ReplicatedFirst, StarterPlayer, StarterGui, Workspace und Lighting (anpassbar ueber roots). Liefert id, path, className, disabled, bytes, lines - ohne Quelle. Fuer Client-Skripte genuegt die Auflistung; ausfuehren kann die Bridge sie nicht.';
+            params = @{ roots = @{ type = 'string[]'; required = $false; default = 'alle Dienste'; description = 'Nur diese Services durchsuchen.' }; limit = @{ type = 'int'; required = $false; default = '300'; description = 'Maximale Trefferzahl.' }; depth = @{ type = 'int'; required = $false; default = '40'; description = '' } };
+            returns = '{ scripts: [ { id, path, className, disabled, bytes, lines } ], count }';
+            example = @{ limit = 100 };
+            errors = @() })
+        $t.Add(@{ name = 'grep_scripts'; category = 'scripts'; summary = 'Text in allen Skript-Quellen suchen (Server + Starter-*).';
+            description = 'Suche mit Klartext oder Lua-Pattern (regex=true) ueber alle Skripte; Treffer mit Zeilennummer und Kontext. Praktisch, um herauszufinden, wo etwas definiert/gedruckt wird, statt jede Datei einzeln zu lesen.';
+            params = @{ query = @{ type = 'string'; required = $true; default = '-'; description = 'Suchtext oder Pattern.' }; regex = @{ type = 'bool'; required = $false; default = 'false'; description = 'Lua-Pattern statt Klartext.' }; ignoreCase = @{ type = 'bool'; required = $false; default = 'false'; description = '' }; roots = @{ type = 'string[]'; required = $false; default = 'alle Dienste'; description = '' }; limit = @{ type = 'int'; required = $false; default = '60'; description = 'Maximale Treffer.' }; contextLines = @{ type = 'int'; required = $false; default = '1'; description = 'Zeilen davor/danach.' }; depth = @{ type = 'int'; required = $false; default = '40'; description = '' } };
+            returns = '{ matches: [ { path, id, line, preview } ], count, scannedScripts, truncated }';
+            example = @{ query = 'print('; limit = 20 };
+            errors = @('BAD_ARGS: query missing.') })
         $t.Add(@{ name = 'find_in_script'; category = 'scripts'; summary = 'Ausschnitt im Skript finden.';
             params = @{ ref = @{ type = 'ref'; required = $true; default = '-'; description = '' }; query = @{ type = 'string'; required = $true; default = '-'; description = 'Text oder (regex=true) Lua-Pattern.' }; regex = @{ type = 'bool'; required = $false; default = 'false'; description = '' }; contextLines = @{ type = 'int'; required = $false; default = '2'; description = 'Zeilen drumherum.' }; limit = @{ type = 'int'; required = $false; default = '40'; description = '' } };
             returns = '{ matches: [ { line, offset, preview } ], count, totalLines, hash }';
@@ -7875,15 +8589,15 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
             returns = '{ id, path, operations: [ { op, line, ... } ], oldLines, newLines, bytes, hash, preview } - bei dryRun: { dryRun, wouldChange, operations, preview }';
             example = @{ ref = '#77'; edits = @(@{ op = 'replace'; find = 'WalkSpeed = 16'; replace = 'WalkSpeed = 24' }, @{ op = 'insertAfter'; find = 'local function onJoin()'; text = 'print("join")' }) };
             errors = @('REF_NOT_FOUND', 'BAD_ARGS: Text nicht gefunden / zweideutig (alle Trefferzeilen stehen im Fehler) / unbekannte op.') })
-        $t.Add(@{ name = 'set_script_source'; category = 'scripts'; summary = 'GANZEN Quelltext ersetzen (fuer neue/kleine Dateien).';
-            description = 'Existiert noch, aber fuer grosse Dateien ist patch_script ueberlegener. Fuer > 50 KB vorher upload_text + sourceRef.';
-            params = @{ ref = @{ type = 'ref'; required = $true; default = '-'; description = '' }; source = @{ type = 'string'; required = $false; default = "''"; description = 'Volle neue Quelle (unverändert übernommen - kein String-Schneidwerk, keine %-Kollisionen).' }; sourceRef = @{ type = 'string'; required = $false; default = 'null'; description = 'uploadId aus upload_text.' }; expectHash = @{ type = 'string'; required = $false; default = 'null'; description = '' } };
-            returns = '{ id, path, bytes, lines, previousBytes, hash }';
+        $t.Add(@{ name = 'set_script_source'; category = 'scripts'; summary = 'GANZEN Quelltext ersetzen (auch sehr grosse Dateien).';
+            description = 'Ersetzt den kompletten Quelltext. Die Bridge routet die GROESSE INTERN: bis 200.000 Zeichen direkter Schreibweg, darueber automatisch ScriptEditorService:UpdateSourceAsync (kein 200k-Limit mehr). Jeder Write wird VERIFIZIERT: Antwort enthaelt applied, verified (Editor-Quelle == Zielquelle) und compileOk. Wenn die Datei im Editor offen ist und ungespeicherte Aenderungen hat (Draft), kommt DRAFT_OPEN - mit force=true wird trotzdem ueberschrieben. Fuer > 50 KB vorher upload_text + sourceRef (Upload muss complete=true sein).';
+            params = @{ ref = @{ type = 'ref'; required = $true; default = '-'; description = '' }; source = @{ type = 'string'; required = $false; default = "''"; description = 'Volle neue Quelle (unverändert übernommen - kein String-Schneidwerk, keine %-Kollisionen).' }; sourceRef = @{ type = 'string'; required = $false; default = 'null'; description = 'uploadId aus upload_text (muss complete=true sein).' }; expectHash = @{ type = 'string'; required = $false; default = 'null'; description = '' }; force = @{ type = 'bool'; required = $false; default = 'false'; description = 'DRAFT_OPEN ueberschreiben (offener Editor mit ungespeicherten Aenderungen).' }; place = @{ type = 'string'; required = $false; default = 'null'; description = 'placeId/placeName/sessionId - nur noetig, wenn mehrere Places verbunden sind.' } };
+            returns = '{ applied, verified, compileOk, id, path, bytes, lines, hash, compileError? }';
             example = @{ ref = '#77'; source = 'print("hi")' };
-            errors = @('REF_NOT_FOUND', 'RUNTIME_ERROR: Hash-Mismatch (Skript wurde zwischendurch geaendert).') })
+            errors = @('REF_NOT_FOUND', 'TOO_LARGE: > 4 MB (Roblox-Grenze).', 'DRAFT_OPEN: Editor-Draft ueberschreibt sonst Aenderungen.', 'COMPILE_ERROR: inkl. Zeile; der alte Stand bleibt erhalten.') })
         $t.Add(@{ name = 'insert_script'; category = 'scripts'; summary = 'Neues Script/LocalScript/ModuleScript.';
-            description = 'Erzeugt ein Skript mit Quelle. ModuleScripte einfach mit "return M" am Ende beenden - die Bridge greift in den Text NICHT ein.';
-            params = @{ parentRef = @{ type = 'ref'; required = $false; default = "'game.ServerScriptService'"; description = '' }; className = @{ type = "'Script'|'LocalScript'|'ModuleScript'"; required = $false; default = "'Script'"; description = '' }; name = @{ type = 'string'; required = $false; default = 'className'; description = '' }; source = @{ type = 'string'; required = $false; default = "''"; description = 'Oder sourceRef.' }; sourceRef = @{ type = 'string'; required = $false; default = 'null'; description = 'uploadId.' }; properties = @{ type = 'table'; required = $false; default = '{}'; description = 'z.B. { Disabled=false }.' } };
+            description = 'Erzeugt ein Skript mit Quelle. ModuleScripte einfach mit "return M" am Ende beenden - die Bridge greift in den Text NICHT ein. Auch sehr grosse Quellen (ueber 200k) funktionieren (interner UpdateSourceAsync-Pfad), vorher upload_text mit complete=true.';
+            params = @{ parentRef = @{ type = 'ref'; required = $false; default = "'game.ServerScriptService'"; description = '' }; className = @{ type = "'Script'|'LocalScript'|'ModuleScript'"; required = $false; default = "'Script'"; description = '' }; name = @{ type = 'string'; required = $false; default = 'className'; description = '' }; source = @{ type = 'string'; required = $false; default = "''"; description = 'Oder sourceRef.' }; sourceRef = @{ type = 'string'; required = $false; default = 'null'; description = 'uploadId aus upload_text (muss complete=true sein).' }; properties = @{ type = 'table'; required = $false; default = '{}'; description = 'z.B. { Disabled=false }.' }; place = @{ type = 'string'; required = $false; default = 'null'; description = 'placeId/placeName/sessionId bei mehreren verbundenen Places.' } };
             returns = '{ id, path, className, lines, hash }';
             example = @{ parentRef = 'game.ServerScriptService'; className = 'Script'; name = 'Main'; source = 'print("hi")' };
             errors = @('REF_NOT_FOUND', 'BAD_ARGS: className ohne Source-Eigenschaft.') })
@@ -7893,17 +8607,17 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
             example = @{ items = @(@{ parentRef = 'game.ServerScriptService'; name = 'A'; source = '-- a' }, @{ parentRef = 'game.ServerScriptService'; name = 'B'; source = '-- b' }) };
             errors = @() })
         $t.Add(@{ name = 'compile_check'; category = 'scripts'; summary = 'Syntax pruefen, OHNE auszufuehren.';
-            description = 'Lädt den Code nur zum Kompilieren. Damit ist COMPILE_ERROR bekannt, BEVOR das Skript laeuft - und es ist kein "Raten und Abwarten" mehr.';
-            params = @{ source = @{ type = 'string'; required = $true; default = '-'; description = 'Oder sourceRef.' }; name = @{ type = 'string'; required = $false; default = "'@arena_check'"; description = 'Name im Fehler.' } };
+            description = 'Prueft die Syntax NUR im Speicher (kein Write, nichts wird ausgefuehrt, auch > 200k Quellen). COMPILE_ERROR kommt mit Zeilennummer zurueck. Nutze das vor run_lua oder vor dem Einbauen.';
+            params = @{ source = @{ type = 'string'; required = $true; default = '-'; description = 'Oder sourceRef (complete=true).' }; name = @{ type = 'string'; required = $false; default = "'@arena_check'"; description = 'Name im Fehler.' } };
             returns = '{ ok=true, compilable=true } oder { ok=false, code="COMPILE_ERROR", error, line }';
             example = @{ source = 'local x = 1 + ' };
             errors = @('COMPILE_ERROR: mit Zeilennummer.') })
         $t.Add(@{ name = 'run_lua'; category = 'scripts'; summary = 'Lua im Server-/Edit-Kontext ausfuehren (persistent!).';
-            description = 'Fuehrt Lua aus und gibt Rueckgabe + alles, was gedruckt wurde, zurueck. WICHTIG: Die Umgebung ist PERSISTENT - ein Helfer aus einem frueheren Call (z.B. "M = {...}" ohne local) ist im naechsten Call weiter da (lua_state zeigt alle persiste Variablen). Fuer Läufe ueber 60s: asJob=true oder start_job.';
-            params = @{ source = @{ type = 'string'; required = $true; default = '-'; description = 'Oder sourceRef.' }; context = @{ type = "'server'|'auto'"; required = $false; default = "'auto'"; description = 'client ist NICHT moeglich (loadstring gesperrt) - fuer den Client: client_action/gui_*/move_character/send_input.' }; asJob = @{ type = 'bool'; required = $false; default = 'false'; description = 'Im Hintergrund als Job laufen lassen (rueckgibt jobId).' } };
+            description = 'Fuehrt Lua im Server-/Edit-Kontext aus und gibt Rueckgabe + alles, was gedruckt wurde, zurueck. WICHTIG: Die Umgebung ist PERSISTENT - ein Helfer aus einem frueheren Call (z.B. "M = {...}" ohne local) ist im naechsten Call weiter da (lua_state zeigt alle persistente Variablen). Timeouts: Standard 180 s, bis 300 s via timeoutSeconds - und ein Timeout ist NIE ein Lua-Fehler (der Code laeuft weiter; Ergebnis kommt in _bridge.lateResults). Fuer laengere Laeufe: asJob=true oder start_job.';
+            params = @{ source = @{ type = 'string'; required = $true; default = '-'; description = 'Oder sourceRef (complete=true).' }; context = @{ type = "'server'|'auto'"; required = $false; default = "'auto'"; description = 'client ist NICHT moeglich (loadstring gesperrt) - fuer den Client: client_action/gui_*/move_character/send_input.' }; timeoutSeconds = @{ type = 'int'; required = $false; default = '180'; description = 'Wartezeit bis 300 (Default 180 bei run_lua).' }; asJob = @{ type = 'bool'; required = $false; default = 'false'; description = 'Im Hintergrund als Job laufen lassen (rueckgibt jobId).' }; place = @{ type = 'string'; required = $false; default = 'null'; description = 'placeId/placeName/sessionId bei mehreren verbundenen Places.' } };
             returns = '{ returned, output: [ { seq, message, type } ], context, environment="persistent", persistentKeys } oder (asJob) { ok, jobId, status="running" }';
             example = @{ source = 'local p = workspace:FindFirstChild("Part"); return p and p.Position' };
-            errors = @('COMPILE_ERROR: Syntax (Zeile im Fehler).', 'RUNTIME_ERROR: Laufzeit (Mitteilung + Output).', 'NO_PLAYER / PLAY_NOT_RUNNING: falscher Kontext.') })
+            errors = @('COMPILE_ERROR: Syntax (Zeile im Fehler).', 'RUNTIME_ERROR: Laufzeit (Mitteilung + Output).', 'STUDIO_TIMEOUT: kein Lua-Fehler - laeuft weiter.', 'NO_PLAYER / PLAY_NOT_RUNNING: falscher Kontext.') })
         $t.Add(@{ name = 'lua_state'; category = 'scripts'; summary = 'Was lebt in der persistenten Lua-Umgebung?';
             params = @{};
             returns = '{ keys: [ "M", "helpers", ... ], count, jobs: [ { id, name, status } ] }';
@@ -8028,17 +8742,17 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
             example = @{};
             errors = @() })
         $t.Add(@{ name = 'play_start'; category = 'play'; summary = 'Test starten: mode="play" (echt, mit Player) oder "run" (nur Simulation).';
-            description = 'WICHTIG VERSTEHEN: mode="play" = echtes Spiel: ein Test-Player mit Charakter, GUI und Client-Agent (dieser Call wartet, bis alles da ist - sonst PLAY_NO_PLAYER mit Diagnose). mode="run" = NUR Server-Skripte + Physik, KEIN Player, KEIN Charakter, KEIN Client, KEINE GUI - das ist NICHT kaputt, sondern genau so definiert; fuer Charakter/GUI-Tests IMMER "play" nehmen. Der Benutzer kann jederzeit selbst Play/Stop druocken - das kommt als Ereignis (play_started/play_stopped, startedBy="user").';
+            description = 'WICHTIG VERSTEHEN: mode="play" = echtes Spiel (ab 3.3 ueber StudioTestService:ExecutePlayModeAsync, Fallback F5): ein Test-Player mit Charakter, GUI und Client-Agent. Der Call wartet bis zu 60 s auf den Moduswechsel und danach (Play) bis zu 60 s auf Spieler + Charakter + Client-Agent - bei Fehlschlag kommen diagnostics (Modus, Selection, TestService, Spielerzahl), recentErrors (Output-Fehler) und Hinweise (Studio-Fokus, Dialoge) zurueck. mode="run" = NUR Server-Skripte + Physik, KEIN Player, KEIN Charakter, KEIN Client, KEINE GUI - das ist NICHT kaputt, sondern genau so definiert; fuer Charakter/GUI-Tests IMMER "play" nehmen. Der Benutzer kann jederzeit selbst Play/Stop druecken - das kommt als Ereignis (play_started/play_stopped, startedBy="user").';
             params = @{ mode = @{ type = "'play'|'run'"; required = $false; default = "'play'"; description = '' } };
-            returns = '{ state: { running, mode, context, playerCount }, modeInfo: { kind, hasPlayer, hasClient, explanation }, player? { name, character, clientAgent }, warnings }';
+            returns = '{ state: { running, mode, context, playerCount }, playerReady?, character? { name, health }, clientAgent?, diagnostics?, recentErrors?, modeInfo? (run), warnings }';
             example = @{ mode = 'play' };
-            errors = @('PLAY_NO_PLAYER: Play-Modus aktiv, aber nach 20s kein Charakter (recentErrors mitgeliefert).', 'STUDIO_TIMEOUT: Studio hat nicht geantwortet (Fenster nicht fokussiert? Dialog offen?).', 'PLAY_FALLBACK_RUN (Warning): Shortcut nicht moeglich, Run-Modus statt Play.') })
+            errors = @('PLAY_NOT_STARTED: Studio wechselt nicht in den Testmodus (60 s) - diagnostics enthaelt Modus/Selection/TestService; Fokus auf Studio legen, Dialoge schliessen.', 'PLAY_NO_PLAYER: Play laeuft, aber nach 60 s kein Spieler/Charakter - recentErrors + diagnostics mitgeliefert.', 'PLAY_FALLBACK_RUN (Warning): weder StudioTestService noch Shortcut moeglich - Run-Modus statt Play gestartet.') })
         $t.Add(@{ name = 'play_stop'; category = 'play'; summary = 'Test stoppen (platz wird wiederhergestellt).';
             description = 'Stoppt ueber den echten Stopp-Knopf, damit der Place-Zustand von vorher zurueckkommt. Alle Aenderungen aus dem Test sind danach weg.';
             params = @{};
             returns = '{ state, warnings }';
             example = @{};
-            errors = @('STUDIO_TIMEOUT: Studio stoppt nicht innerhalb 15s.') })
+            errors = @('STUDIO_TIMEOUT: Studio stoppt nicht innerhalb 60 s - Zustand + Diagnose in der Antwort.') })
         $t.Add(@{ name = 'play_pause'; category = 'play'; summary = 'Simulation pausieren.';
             description = 'Bleibt stehen, aber laeuft weiter (State bleibt erhalten). Im Run-Modus nur Physik, im Play-Modus auch der Charakter.';
             params = @{};
@@ -8212,9 +8926,9 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
             example = @{ blobId = 'blob_abc'; index = 1 };
             errors = @('REF_NOT_FOUND: unbekanntes/abgelaufenes blobId (30 Min).') })
         $t.Add(@{ name = 'upload_text'; category = 'system'; summary = 'Grossen Text in Stuecken hochladen.';
-            description = 'Fuer Skriptquellen > 50 KB: in Chunks hierher, danach sourceRef=<uploadId> an set_script_source/insert_script. Der Text wird unverändert übernommen (kein String-Schneidwerk, keine %-Kollisionen).';
-            params = @{ text = @{ type = 'string'; required = $true; default = '-'; description = 'Stueck (oder alles).' }; uploadId = @{ type = 'string'; required = $false; default = 'neu'; description = 'Fuer mehrere Chunks: gleicher Wert.' }; chunkIndex = @{ type = 'int'; required = $false; default = '1'; description = '' }; chunkCount = @{ type = 'int'; required = $false; default = '1'; description = '' } };
-            returns = '{ uploadId, chars, complete, useAs }';
+            description = 'Fuer Skriptquellen > 50 KB (oder sehr grosse Texte): in Stuecken hochladen, danach sourceRef=<uploadId> an set_script_source / insert_script / run_lua / compile_check. chunkIndex ist 1-BASIERT (0 wird abgelehnt). Abgeschlossen ist ein Upload erst, wenn chunkIndex == chunkCount - die Antwort sagt complete explizit. sourceRef auf unfertige Uploads wird mit UPLOAD_INCOMPLETE abgelehnt. Der Text wird unverändert übernommen.';
+            params = @{ text = @{ type = 'string'; required = $true; default = '-'; description = 'Stueck (oder alles bei chunkCount=1).' }; uploadId = @{ type = 'string'; required = $false; default = 'neu'; description = 'Fuer mehrere Chunks: gleicher Wert.' }; chunkIndex = @{ type = 'int'; required = $false; default = '1'; description = '1-BASIERT: 1 = erster Teil, chunkCount = letzter Teil. 0 wird abgelehnt.' }; chunkCount = @{ type = 'int'; required = $false; default = '1'; description = 'Anzahl der Teile insgesamt.' } };
+            returns = '{ uploadId, chars, chunkIndex, chunkCount, complete (true erst beim letzten Teil), useAs }';
             example = @{ text = 'local M = {}'; chunkIndex = 1; chunkCount = 3; uploadId = 'myScript' };
             errors = @() })
         $t.Add(@{ name = 'get_docs'; category = 'system'; summary = 'Doku holen: pro Tool, pro Kategorie oder komplett.';
@@ -8261,7 +8975,13 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
                 'BIG DATA IS NEVER TRUNCATED: if an answer is too big it is stored on the PC and you get blobId + chunkCount. Fetch every chunk with get_chunk and glue them together.',
                 'SCREENSHOTS ARE A LAST RESORT: capture_screenshot exists but you are strongly advised NOT to use it - reading images is unreliable. describe_scene, get_bounds, get_tree, get_output and the gui_* tools give you exact facts.',
                 'ROTATION: before rotating cylinders or wedges, call coordinate_guide (it MEASURES the shape geometry in the place, it does not guess) and then use point_at / describe_orientation. "Which way does this part face?" is answered by describe_orientation - not by trial and error.',
-                'ERRORS HAVE CLASSES: every error response carries a code (STUDIO_TIMEOUT, PLAY_MODE_ACTIVE, COMPILE_ERROR, RUNTIME_ERROR, REF_NOT_FOUND, REGION_LIMIT, WORLD_NOT_PROBED, UNION_BUDGET, SOLID_REFUSED, CATALOG_UNAVAILABLE, ASSET_TYPE_MISMATCH, ...). React on the code, do not string-match error text.'
+                'ERRORS HAVE CLASSES: every error response carries a code (STUDIO_TIMEOUT, PLAY_MODE_ACTIVE, COMPILE_ERROR, RUNTIME_ERROR, REF_NOT_FOUND, REGION_LIMIT, WORLD_NOT_PROBED, UNION_BUDGET, SOLID_REFUSED, CATALOG_UNAVAILABLE, ASSET_TYPE_MISMATCH, ...). React on the code, do not string-match error text.',
+                'MULTIPLE PLACES: one shared key can reach ALL connected Studio windows (Einstellungen > Key fuer alle Places). When more than one place is connected: first GET /api/places (overview with placeId/placeName/sessionId), then add args.place to EVERY tool call. Without place and several places online you get MULTIPLE_PLACES with the list - not an error, just disambiguation.',
+                'BIG SCRIPTS ARE AUTOMATIC: writes up to 200.000 chars use the direct path; bigger ones are routed through ScriptEditorService:UpdateSourceAsync internally (works up to several MB). Never try to work around sizes yourself - just read the result fields applied / verified / compileOk. compile_check works in memory for any size.',
+                'VERIFIED WRITES: every script write answers applied + verified (= the editor source is REALLY the source you wanted, read back after writing) + compileOk. Success means exactly that. If the script is open with unsaved draft edits you get DRAFT_OPEN (repeat with force=true to overwrite the draft).',
+                'UPLOADS ARE 1-BASED AND MUST COMPLETE: upload_text chunks start at chunkIndex = 1. complete becomes true only when chunkIndex == chunkCount. sourceRef on an unfinished upload is refused (UPLOAD_INCOMPLETE) - never silently accepted.',
+                'TIME IS NOT A FAILURE: an HTTP timeout (STUDIO_TIMEOUT) only means "the answer took longer". The command keeps running in Studio, nothing is killed, the next call waits for it and the result arrives in _bridge.lateResults. run_lua waits up to 300 s when you ask for it.',
+                'OUTPUT IS A TOOL: get_output returns Studio output (server+client) since a timestamp or sequence. Use it to read errors instead of asking the user to look at the screen.'
             )
             coordinateGuide = @(
                 'AXES: +X = right, +Y = up, +Z = toward the viewer. The default Studio camera looks toward -Z. The "front" face of a part is its -Z face.',
@@ -8395,24 +9115,25 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
         $guides = Get-BridgeGuides
         $manifest = @{
             name = 'Arena Roblox Studio Bridge'
-            version = '3.2'
+            version = [string]$Shared.AppVersion
             docsVersion = [string]$Shared.DocsVersion
-            role = 'You are connected to exactly ONE live Roblox Studio place through a local plugin. Every token belongs to one Studio window only - if several windows are open, each one has its own token and you can never touch the wrong place. Send every request as POST /api/tool with JSON body { "token": "...", "tool": "...", "args": { ... } }.'
+            role = 'You (the AI) talk to one or more live Roblox Studio places through a local plugin on the user''s PC. Authentication uses ONE shared key for ALL connected places (the "Key fuer alle Places" from the app settings; per-place tokens also still work and reach exactly that one window). Whenever more than one place is connected, call GET /api/places first to get the overview (placeId, placeName, sessionId, state, accessMode). Then address the right place on every call with args.place = <placeId> (or placeName/sessionId). If you omit place while several places are connected, the bridge answers with MULTIPLE_PLACES and the list. Send every request as POST /api/tool with JSON body { "token": "<key>", "tool": "...", "args": { ..., "place": "<placeId>" } }.'
             firstCallBehavior = 'The complete documentation (every tool: description, all parameters with type+default, return value, runnable example, error cases) is delivered automatically with the FIRST tool response of this session as _sessionStart. You do not need any extra call to get it. On demand: GET /api/docs (no param = everything, ?tool=<name>, ?category=<name>) or the get_docs tool.'
             authentication = @{
                 headers = @('Authorization: Bearer <token>', 'X-Arena-Token: <token>')
                 query = '?token=<token>'
             }
             endpoints = @{
-                manifest    = 'GET /api/manifest'
+                manifest    = 'GET /api/manifest  (or GET /api/tools, GET /)'
                 docs        = 'GET /api/docs  (no param = everything; ?tool=<name>; ?category=<name>; ?full=true)'
-                place       = 'GET /api/place'
-                callTool    = 'POST /api/tool  { token, tool, args }  (args.asJob=true = run in background, get jobId)'
-                callMany    = 'POST /api/tools/parallel  { token, calls: [ { tool, args } ] }  - runs several tools at the same time'
-                events      = 'GET /api/events?token=...  - what the user did (started/stopped a playtest, plays in the game, ...)'
+                places      = 'GET /api/places?token=...  - ALL connected places of this key (placeId/placeName/sessionId/state/accessMode)'
+                place       = 'GET /api/place?token=...&place=<placeId>  - details of ONE place'
+                callTool    = 'POST /api/tool  { token, tool, args }  (args.place = <placeId> wenn mehrere Places verbunden sind; args.asJob=true = run in background)'
+                callMany    = 'POST /api/tools/parallel  { token, calls: [ { tool, args } ] }  - several tools at the same time (same place; per-call args.place supported)'
+                events      = 'GET /api/events?token=...&place=<placeId>  - what the user did (started/stopped a playtest, plays in the game, ...)'
                 blob        = 'GET /api/blob?token=...&id=<blobId>&index=<n>  - fetch one chunk of a huge answer'
-                upload      = 'POST /api/upload  { token, text, uploadId?, chunkIndex?, chunkCount? }  - send a huge script in pieces, then use args.sourceRef = uploadId'
-                status      = 'GET /api/status'
+                upload      = 'POST /api/upload  { token, text, uploadId?, chunkIndex?, chunkCount? }  - send a huge script in pieces (chunkIndex is 1-BASED; complete=true required), then use args.sourceRef = uploadId'
+                status      = 'GET /api/status?token=...  - bridge status + allPlaces overview'
             }
             toolCount = $docs.Count
             toolsIndex = $toolIndex
@@ -8477,7 +9198,7 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
         $entry = Get-SessionEntry $sessionId
         $events = Take-Events $sessionId 12
         $envelope = @{
-            bridgeVersion = '3.2'
+            bridgeVersion = [string]$Shared.AppVersion
             place         = if ($entry) { $entry.placeName } else { $null }
             sessionId     = $sessionId
             studio        = if ($entry) { $entry.state } else { $null }
@@ -8549,26 +9270,73 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
                 return (Get-BlobChunk ([string]$toolArgs.blobId) $index)
             }
             'upload_text' {
+                # STRENGE CHUNK-VALIDIERUNG (seit 3.3):
+                #  - chunkIndex ist 1-BASIERT. 0 (oder negativ) wird explizit
+                #    abgelehnt - niemals still geschluckt.
+                #  - Der erste Chunk ist chunkIndex=1 und beginnt einen neuen Text.
+                #  - chunkCount muss gesetzt sein, wenn in mehreren Teilen
+                #    hochgeladen wird.
+                #  - complete ist explizit: erst wenn chunkIndex >= chunkCount
+                #    gilt, darf sourceRef benutzt werden (UPLOAD_INCOMPLETE sonst).
                 $uploadId = [string]$toolArgs.uploadId
                 if ([string]::IsNullOrWhiteSpace($uploadId)) {
                     $uploadId = 'up_' + [guid]::NewGuid().ToString('N').Substring(0, 12)
                 }
+                $chunkIndex = 1
+                if ($toolArgs.chunkIndex -ne $null) { $chunkIndex = [int]$toolArgs.chunkIndex }
+                if ($chunkIndex -lt 1) {
+                    return @{
+                        ok = $false
+                        code = 'BAD_CHUNK_INDEX'
+                        error = "chunkIndex ist 1-BASIERT, '$chunkIndex' ist ungueltig. Der erste Teil ist chunkIndex = 1, der letzte chunkIndex = chunkCount."
+                    }
+                }
+                $chunkCount = 1
+                if ($toolArgs.chunkCount -ne $null) { $chunkCount = [int]$toolArgs.chunkCount }
+                if ($chunkCount -lt 1) {
+                    return @{
+                        ok = $false
+                        code = 'BAD_CHUNK_COUNT'
+                        error = "chunkCount muss >= 1 sein (1-BASIS), '$chunkCount' ist ungueltig."
+                    }
+                }
+                if ($chunkCount -gt 1 -and $chunkIndex -gt $chunkCount) {
+                    return @{
+                        ok = $false
+                        code = 'BAD_CHUNK_INDEX'
+                        error = "chunkIndex ($chunkIndex) darf nicht groesser als chunkCount ($chunkCount) sein."
+                    }
+                }
+
                 $existing = ''
                 [void]$Shared.Uploads.TryGetValue($uploadId, [ref]$existing)
-                $chunkIndex = 1
-                if ($toolArgs.chunkIndex) { $chunkIndex = [int]$toolArgs.chunkIndex }
-                if ($chunkIndex -le 1) { $existing = '' }
+                if ($chunkIndex -eq 1) {
+                    $existing = ''
+                } elseif ([string]::IsNullOrEmpty($existing)) {
+                    return @{
+                        ok = $false
+                        code = 'UPLOAD_NOT_STARTED'
+                        error = "Upload '$uploadId' existiert noch nicht. Beginne mit chunkIndex = 1 (Uploads sind 1-basiert)."
+                    }
+                }
                 $Shared.Uploads[$uploadId] = $existing + [string]$toolArgs.text
-                $chunkCount = 1
-                if ($toolArgs.chunkCount) { $chunkCount = [int]$toolArgs.chunkCount }
                 $complete = ($chunkIndex -ge $chunkCount)
+                if ($complete) {
+                    $Shared.UploadComplete[$uploadId] = $true
+                } else {
+                    $removedFlag = $false
+                    [void]$Shared.UploadComplete.TryRemove($uploadId, [ref]$removedFlag)
+                }
                 return @{
                     ok = $true
                     result = @{
                         uploadId = $uploadId
                         chars = $Shared.Uploads[$uploadId].Length
+                        chunkIndex = $chunkIndex
+                        chunkCount = $chunkCount
                         complete = $complete
-                        useAs = 'Pass sourceRef = "' + $uploadId + '" instead of source in set_script_source / insert_script.'
+                        note = if ($complete) { 'Upload abgeschlossen - du kannst sourceRef = "' + $uploadId + '" verwenden.' } else { 'Upload noch NICHT abgeschlossen - sourceRef wird abgelehnt, bis chunkIndex == chunkCount erreicht ist.' }
+                        useAs = 'Pass sourceRef = "' + $uploadId + '" instead of source in set_script_source / insert_script / run_lua.'
                     }
                 }
             }
@@ -8590,7 +9358,7 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
                 return @{
                     ok = $true
                     result = @{
-                        bridgeVersion = '3.2'
+                        bridgeVersion = [string]$Shared.AppVersion
                         docsVersion = [string]$Shared.DocsVersion
                         place = if ($entry) { $entry.placeName } else { $null }
                         placeId = if ($entry) { $entry.placeId } else { $null }
@@ -8603,7 +9371,7 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
                         storedBlobs = $Shared.Blobs.Count
                         assetCacheEntries = $assetCacheEntries
                         docs = 'GET /api/docs for the complete tool documentation (or ?tool= / ?category=).'
-                        note = 'Each Studio window has its own token. This token only ever reaches the place shown above.'
+                        note = 'Seit 3.3 gibt es zusaetzlich den gemeinsamen Key fuer alle Places (Einstellungen > Key fuer alle Places). GET /api/places listet alle verbundenen Places; Tools akzeptieren args.place (placeId/placeName/sessionId).'
                     }
                 }
             }
@@ -8633,6 +9401,19 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
                 continue
             }
 
+            # ---------------- Intern: Doppelstart-Handoff -------------------
+            # Eine zweite Instanz fordert diese (alte) Instanz auf, sich sauber
+            # zu schliessen. Danach uebernimmt die neue Instanz Port und Tunnel.
+            if ($path -eq '/internal/shutdown') {
+                try {
+                    $Shared['RequestExit'] = $true
+                    try { $Shared['RequestExitAt'] = [DateTime]::UtcNow.Ticks } catch {}
+                    Write-BridgeLog "Doppelstart-Handoff empfangen - Programm schliesst sich."
+                } catch {}
+                Send-Json $context 200 @{ ok = $true; exiting = $true }
+                continue
+            }
+
             # ---------------- Plugin ---------------------------------------
             if ($path -eq '/plugin/hello') {
                 $entry = Register-Session $body
@@ -8644,7 +9425,7 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
                         sessionId = $entry.sessionId
                         token = $entry.token
                         accessMode = $entry.accessMode
-                        serverVersion = '3.2'
+                        serverVersion = [string]$Shared.AppVersion
                         docsVersion = [string]$Shared.DocsVersion
                     }
                 }
@@ -8787,33 +9568,85 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
             }
 
             # ---------------- Zugriff prüfen -------------------------------
+            # Ein Token kann (a) ein einzelnes Studio-Fenster oder (b) der
+            # gemeinsame Key fuer ALLE Places sein (siehe Get-SessionsForToken).
             $token = Get-Token $context.Request $body
-            $sessionId = Get-SessionForToken $token
-            if (-not $sessionId) {
+            $sessions = Get-SessionsForToken $token
+            if ($sessions.Count -eq 0) {
                 Send-Json $context 401 @{
                     ok = $false
-                    error = 'Token ungültig oder Place nicht verbunden.'
-                    hint = 'Open the place in Roblox Studio and copy the prompt again from the Arena Roblox Bridge window. Every Studio window has its own token.'
+                    code = 'NO_ACCESS'
+                    error = 'Token oder Key ist ungültig oder es ist kein Place verbunden.'
+                    hint = 'Open a place in Roblox Studio and copy the prompt again from the Arena Roblox Bridge window (Einstellungen > "Key fuer alle Places" > Prompt kopieren).'
                 }
                 continue
             }
+
+            if ($path -eq '/api/places') {
+                $snaps = Get-AllPlaceSnapshots $sessions
+                Send-Json $context 200 @{
+                    ok = $true
+                    count = $snaps.Count
+                    places = $snaps
+                    hint = 'Mehrere Places sind verbunden. Um einen einzelnen Place anzusprechen, gib bei jedem Tool-Call args.place an: die placeId, den placeName oder die sessionId aus dieser Liste. Ohne place arbeitet ein Tool nur, wenn genau EIN Place verbunden ist.'
+                }
+                continue
+            }
+
+            # Welcher Place ist gemeint? ('place' kann im Body, in args oder in
+            # der Query stehen.)
+            $placeArg = ''
+            if ($body -and ($body.PSObject.Properties.Name -contains 'place')) { $placeArg = [string]$body.place }
+            if ([string]::IsNullOrWhiteSpace($placeArg) -and $body -and ($body.PSObject.Properties.Name -contains 'args') -and $body.args -and ($body.args.PSObject.Properties.Name -contains 'place')) {
+                $placeArg = [string]$body.args.place
+            }
+            if ([string]::IsNullOrWhiteSpace($placeArg)) { $placeArg = [string]$context.Request.QueryString['place'] }
+            $resolution = Resolve-PlaceSession $sessions $placeArg
+
+            if ($resolution.status -eq 'multiple') {
+                Send-Json $context 200 @{
+                    ok = $false
+                    code = 'MULTIPLE_PLACES'
+                    error = "Mehrere Places sind mit diesem Key verbunden ($($resolution.places.Count)). Ohne 'place' kann die Bridge nicht wissen, welcher gemeint ist."
+                    places = $resolution.places
+                    howToFix = 'Rufe GET /api/places?token=... auf oder schau in die Antwort hier: waehle daraus placeId/placeName/sessionId und wiederhole den Aufruf mit args.place (z.B. { place = "<placeId>", ... }). Nur wenn genau EIN Place verbunden ist, ist 'place' optional.'
+                }
+                continue
+            }
+            if ($resolution.status -eq 'none') {
+                Send-Json $context 200 @{
+                    ok = $false
+                    code = 'PLACE_NOT_FOUND'
+                    error = "Kein verbundener Place passt auf place='$placeArg'."
+                    places = $resolution.places
+                    howToFix = 'Vergleiche place mit GET /api/places (placeId / placeName / sessionId).'
+                }
+                continue
+            }
+
+            $sessionId = $resolution.sessionId
             $sessionEntry = Get-SessionEntry $sessionId
             $accessMode = 'readwrite'
             [void]$Shared.AccessModes.TryGetValue($sessionId, [ref]$accessMode)
+            $connectedForThisKey = $sessions.Count
 
             if ($path -eq '/api/place') {
-                Send-Json $context 200 @{ ok = $true; place = $sessionEntry }
+                Send-Json $context 200 @{ ok = $true; place = $sessionEntry; connectedPlaces = $connectedForThisKey }
                 continue
             }
 
             if ($path -eq '/api/status') {
+                $snaps = Get-AllPlaceSnapshots $sessions
                 Send-Json $context 200 @{
                     ok = $true
-                    bridgeVersion = '3.2'
+                    bridgeVersion = [string]$Shared.AppVersion
                     docsVersion = [string]$Shared.DocsVersion
                     place = $sessionEntry
-                    connectedPlaces = $Shared.Sessions.Count
+                    placeId = if ($sessionEntry) { $sessionEntry.placeId } else { $null }
+                    connectedPlaces = $connectedForThisKey
+                    allPlaces = $snaps
                     accessMode = $accessMode
+                    hint = 'GET /api/places listet alle verbundenen Places dieses Keys.'
                 }
                 continue
             }
@@ -8855,7 +9688,7 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
                     continue
                 }
                 $timeout = 90
-                if ($body.timeoutSeconds) { $timeout = [Math]::Min([int]$body.timeoutSeconds, 180) }
+                if ($body.timeoutSeconds) { $timeout = [Math]::Max(10, [Math]::Min([int]$body.timeoutSeconds, 300)) }
                 $resultsJson = Invoke-PluginToolsParallel $sessionId $body.calls $timeout
                 $envelope = New-Envelope $sessionId
                 Send-RawJson $context 200 ('{"_bridge":' + (To-Json $envelope 20) + ',"ok":true,"results":' + $resultsJson + '}')
@@ -8880,9 +9713,20 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
                 if ($toolArgs.PSObject.Properties.Name -contains 'sourceRef') {
                     $uploaded = $null
                     if ($Shared.Uploads.TryGetValue([string]$toolArgs.sourceRef, [ref]$uploaded)) {
+                        $uploadDone = $false
+                        [void]$Shared.UploadComplete.TryGetValue([string]$toolArgs.sourceRef, [ref]$uploadDone)
+                        if (-not $uploadDone) {
+                            Send-Json $context 400 @{
+                                ok = $false
+                                code = 'UPLOAD_INCOMPLETE'
+                                error = "sourceRef '$($toolArgs.sourceRef)' zeigt auf einen UNFERTIGEN Upload (nie mit chunkIndex == chunkCount abgeschlossen)."
+                                howToFix = 'Lade den Text mit upload_text erneut hoch und achte auf complete = true (chunkIndex 1-basiert, letzter Teil: chunkIndex = chunkCount). Erst danach sourceRef verwenden.'
+                            }
+                            continue
+                        }
                         $toolArgs | Add-Member -NotePropertyName 'source' -NotePropertyValue $uploaded -Force
                     } else {
-                        Send-Json $context 400 @{ ok = $false; error = "Unknown sourceRef '$($toolArgs.sourceRef)'. Upload the text again with upload_text." }
+                        Send-Json $context 400 @{ ok = $false; code = 'UNKNOWN_UPLOAD'; error = "Unknown sourceRef '$($toolArgs.sourceRef)'. Upload the text again with upload_text." }
                         continue
                     }
                 }
@@ -8961,12 +9805,15 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
                     continue
                 }
 
-                $timeout = 60
-                if ($toolArgs.timeoutSeconds) {
-                    $timeout = [Math]::Min([int]$toolArgs.timeoutSeconds + 25, 180)
-                }
-                if ($body.timeoutSeconds) {
-                    $timeout = [Math]::Min([int]$body.timeoutSeconds, 180)
+                # Timeouts: Standard 60 s (run_lua/Jobs 180 s), bis 300 s erlaubt.
+                # Ein Timeout ist KEIN Lua-Fehler: Studio arbeitet weiter und das
+                # Ergebnis kommt mit der naechsten Antwort (_bridge.lateResults).
+                $timeout = if ($tool -in @('run_lua','compile_check','play_start','play_stop','play_pause','play_resume','start_job')) { 180 } else { 60 }
+                $requested = 0
+                if ($toolArgs.timeoutSeconds) { $requested = [int]$toolArgs.timeoutSeconds }
+                if ($body.timeoutSeconds -and [int]$body.timeoutSeconds -gt $requested) { $requested = [int]$body.timeoutSeconds }
+                if ($requested -gt 0) {
+                    $timeout = [Math]::Max(10, [Math]::Min($requested + 20, 300))
                 }
 
                 # Langer Lauf? Als Job in den Hintergrund - läuft sicher über 60 s hinaus.
@@ -8984,7 +9831,7 @@ return @{ ok = $true; file = $filePath; width = $shotWidth; height = $shotHeight
                         workIsLost = $false
                         hint = 'The command is STILL RUNNING inside Studio - nothing was lost and nothing was killed. Studio executes commands strictly one after another: your next call automatically waits until this one finished (you will never measure against a still-running script). When the result arrives it is delivered in _bridge.lateResults of your next response.'
                         studio = if ($entryNow) { $entryNow.state } else { $null }
-                        betterWay = 'For work that takes longer than 60 seconds: repeat this call with args.asJob=true (or use the start_job tool). You get a jobId back immediately and poll it with job_status / job_result - there is no timeout to hit.'
+                        betterWay = 'For work that takes longer than this timeout: repeat the call with a higher timeoutSeconds (up to 300), or with args.asJob=true / start_job. Jobs run in the background and poll with job_status / job_result - there is no timeout to hit.'
                     }
                     if ($stillRunning.Count -gt 0) {
                         $timeoutBody.pendingInStudio = $stillRunning
@@ -9218,12 +10065,508 @@ function Set-StartupEnabled {
     param([bool]$Enabled)
     $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     if ($Enabled) {
-        $value = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File `"$($script:AppRoot)\ArenaBridge.ps1`""
+        # Autostart nutzt denselben Startweg wie der Doppelklick (VBS/Wscript,
+        # kein Konsolenfenster). Nur wenn kein VBS gefunden wird: PowerShell
+        # direkt, aber versteckt.
+        $launch = Get-LaunchCommand
+        if ($launch) {
+            $value = "`"$($launch.File)`" $($launch.Arguments)"
+        } else {
+            $value = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File `"$($script:AppRoot)\ArenaBridge.ps1`""
+        }
         New-Item -Path $runKey -Force | Out-Null
         Set-ItemProperty -Path $runKey -Name 'ArenaRobloxBridge' -Value $value
     } else {
         Remove-ItemProperty -Path $runKey -Name 'ArenaRobloxBridge' -ErrorAction SilentlyContinue
     }
+}
+
+# ----------------------------------------------------------------------------
+# STARTER / VERSTECKTER START
+# Das Programm wird grundsaetzlich OHNE sichtbares Konsolenfenster gestartet:
+#   - "Start Bridge.vbs" (Doppelklick nach dem Entpacken) startet PowerShell
+#     mit Fenster-Stil 0 (versteckt). Es erscheint NUR das Programmfenster.
+#   - Autostart, Neustart und Auto-Update verwenden dieselbe Funktion.
+# ----------------------------------------------------------------------------
+function Get-StartBridgeVbsPath {
+    $candidates = @()
+    if ($script:RepoRoot) { $candidates += Join-Path $script:RepoRoot 'Start Bridge.vbs' }
+    if ($script:AppRoot)  { $candidates += Join-Path $script:AppRoot 'Start Bridge.vbs' }
+    if ($script:RepoRoot) { $candidates += Join-Path $script:RepoRoot 'Arena Roblox Bridge.vbs' }
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+    }
+    return $null
+}
+
+function Get-LaunchCommand {
+    # Liefert ein Objekt mit File/Arguments, mit dem das Programm versteckt
+    # und entkoppelt gestartet wird (kein sichtbares Konsolenfenster).
+    $vbs = Get-StartBridgeVbsPath
+    if ($vbs) {
+        return [pscustomobject]@{ File = 'wscript.exe'; Arguments = "`"$vbs`"" }
+    }
+    $ps1 = Join-Path $script:AppRoot 'ArenaBridge.ps1'
+    if (Test-Path -LiteralPath $ps1) {
+        return [pscustomobject]@{ File = 'powershell.exe'; Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File `"$ps1`"" }
+    }
+    return $null
+}
+
+function Start-HiddenApp {
+    try {
+        $cmd = Get-LaunchCommand
+        if (-not $cmd) { return $false }
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $cmd.File
+        $psi.Arguments = $cmd.Arguments
+        $psi.UseShellExecute = $true
+        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+        $psi.CreateNoWindow = $true
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $psi
+        return [void]$process.Start()
+    } catch {
+        Write-RuntimeLog "Start-HiddenApp fehlgeschlagen: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Restart-BridgeApp {
+    # Schliesst dieses Fenster und startet das Programm automatisch neu
+    # (gleicher Startweg wie beim Doppelklick - kein Konsolenfenster).
+    $started = Start-HiddenApp
+    Write-RuntimeLog "Neustart: neue Instanz gestartet = $started"
+    try { $window.Close() } catch {}
+}
+
+# ----------------------------------------------------------------------------
+# LOKALE EINSTELLUNGEN (settings.json im AppData-Ordner)
+# Bleiben bei jedem Update erhalten und sind nie Teil des Repositories.
+# ----------------------------------------------------------------------------
+$script:AppSettingsCache = $null
+
+function Read-AppSettings {
+    if ($null -ne $script:AppSettingsCache) { return $script:AppSettingsCache }
+    $settings = @{}
+    try {
+        if (Test-Path -LiteralPath $script:SettingsPath) {
+            $raw = Get-Content -LiteralPath $script:SettingsPath -Raw -Encoding UTF8
+            if (-not [string]::IsNullOrWhiteSpace($raw)) {
+                $parsed = $raw | ConvertFrom-Json
+                foreach ($prop in $parsed.PSObject.Properties) { $settings[$prop.Name] = $prop.Value }
+            }
+        }
+    } catch {
+        Write-RuntimeLog "settings.json konnte nicht gelesen werden: $($_.Exception.Message)"
+    }
+    $script:AppSettingsCache = $settings
+    return $settings
+}
+
+function Save-AppSettings {
+    param($Settings)
+    $script:AppSettingsCache = $Settings
+    try {
+        $Settings | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $script:SettingsPath -Encoding UTF8
+    } catch {
+        Write-RuntimeLog "settings.json konnte nicht geschrieben werden: $($_.Exception.Message)"
+    }
+}
+
+function Get-AccessKey {
+    $settings = Read-AppSettings
+    $key = [string]$settings['accessKey']
+    if ([string]::IsNullOrWhiteSpace($key)) {
+        $key = New-Token
+        $settings['accessKey'] = $key
+        Save-AppSettings $settings
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$script:Shared['AccessKey'])) {
+        try { $script:Shared['AccessKey'] = $key } catch {}
+    }
+    return $key
+}
+
+function Set-AccessKey {
+    param([string]$Key)
+    $settings = Read-AppSettings
+    $settings['accessKey'] = $Key
+    Save-AppSettings $settings
+    try { $script:Shared['AccessKey'] = $Key } catch {}
+    Write-RuntimeLog "Neuer Zugangsschluesel (Key fuer alle Places) wurde gesetzt."
+}
+
+# ----------------------------------------------------------------------------
+# VERSIONSVERGLEICH + GITHUB-ABFRAGE
+# ----------------------------------------------------------------------------
+function Get-InstalledVersion {
+    try {
+        $vp = $null
+        if ($script:RepoRoot) {
+            $c = Join-Path $script:RepoRoot 'version.json'
+            if (Test-Path -LiteralPath $c) { $vp = $c }
+        }
+        if (-not $vp) {
+            $c = Join-Path $script:AppRoot 'version.json'
+            if (Test-Path -LiteralPath $c) { $vp = $c }
+        }
+        if ($vp) {
+            $obj = Get-Content -LiteralPath $vp -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($obj -and $obj.version) { return [string]$obj.version }
+        }
+    } catch {}
+    return [string]$script:AppVersion
+}
+
+function Split-Version {
+    param([string]$Version)
+    $parts = @()
+    foreach ($piece in ([string]$Version -split '[.\-_]')) {
+        $n = 0
+        if ([int]::TryParse($piece, [ref]$n)) { $parts += $n } else { $parts += 0 }
+    }
+    while ($parts.Count -lt 3) { $parts += 0 }
+    return ,$parts
+}
+
+function Compare-Versions {
+    param([string]$Left, [string]$Right)
+    $a = @(Split-Version $Left)
+    $b = @(Split-Version $Right)
+    for ($i = 0; $i -lt 3; $i++) {
+        if ($a[$i] -lt $b[$i]) { return -1 }
+        if ($a[$i] -gt $b[$i]) { return 1 }
+    }
+    return 0
+}
+
+function Invoke-WebText {
+    param([string]$Url, [int]$TimeoutSeconds = 12)
+    try {
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+        $request = [System.Net.HttpWebRequest]::Create($Url)
+        $request.Timeout = $TimeoutSeconds * 1000
+        $request.UserAgent = 'ArenaRobloxBridge/' + (Get-InstalledVersion)
+        $request.Accept = 'application/json,text/plain,*/*'
+        $response = $request.GetResponse()
+        try {
+            $reader = [System.IO.StreamReader]::new($response.GetResponseStream(), [System.Text.Encoding]::UTF8)
+            try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+        } finally {
+            try { $response.Close() } catch {}
+        }
+    } catch {
+        Write-RuntimeLog "Netzwerkabfrage fehlgeschlagen ($Url): $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Get-RemoteVersionInfo {
+    param([switch]$Force)
+    $settings = Read-AppSettings
+    if (-not $Force) {
+        $last = [DateTime]::MinValue
+        $raw = [string]$settings['lastUpdateCheck']
+        if ($raw) { [DateTime]::TryParse($raw, [ref]$last) | Out-Null }
+        if (((Get-Date) - $last).TotalHours -lt $script:UpdateCheckHours) { return $null }
+    }
+    $json = Invoke-WebText $script:UpdateInfoUrl
+    if ($null -eq $json) { return $null }
+    try {
+        $obj = $json | ConvertFrom-Json
+        if (-not $obj -or -not $obj.version) { return $null }
+        $settings['lastUpdateCheck'] = (Get-Date).ToString('o')
+        Save-AppSettings $settings
+        return $obj
+    } catch {
+        Write-RuntimeLog "version.json konnte nicht gelesen werden: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+# ----------------------------------------------------------------------------
+# AUTO-UPDATE
+# ----------------------------------------------------------------------------
+$script:StagingDir = Join-Path $script:AppDataRoot 'update_staging'
+$script:UpdaterScriptPath = Join-Path $script:AppDataRoot 'apply_update.ps1'
+
+function Get-StagedVersionDir {
+    param([string]$Version)
+    $candidate = Join-Path $script:StagingDir ("v" + [string]$Version)
+    $marker = Join-Path $candidate 'version.json'
+    if (Test-Path -LiteralPath $marker) { return $candidate }
+    return $null
+}
+
+function Test-UpdateReady {
+    # Gibt die gestaffelte Version zurueck, wenn ein Update vollstaendig
+    # heruntergeladen und verifiziert im Staging-Ordner liegt.
+    $settings = Read-AppSettings
+    $pending = $settings['pendingUpdate']
+    if (-not $pending) { return $null }
+    try {
+        $version = [string]$pending.version
+    } catch { return $null }
+    $dir = Get-StagedVersionDir $version
+    if (-not $dir) { return $null }
+    return $version
+}
+
+function Start-StageUpdate {
+    param($VersionInfo)
+    $version = [string]$VersionInfo.version
+    $target = Join-Path $script:StagingDir ("v" + $version)
+    $done = Get-StagedVersionDir $version
+    if ($done) { return $done }
+
+    try {
+        New-Item -ItemType Directory -Path $script:StagingDir -Force | Out-Null
+        $zipPath = Join-Path $script:StagingDir ("update_" + $version + '.zip')
+        $json = Invoke-WebText $script:UpdateZipUrl 40
+        if ($null -eq $json) {
+            # ZIP ist binär - HttpWebRequest liefert Text. Binaeren Download separat:
+            return Start-StageUpdateBinary $version $zipPath
+        }
+        return $null
+    } catch {
+        Write-RuntimeLog "Update-Staging fehlgeschlagen: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Start-StageUpdateBinary {
+    param([string]$Version, [string]$ZipPath)
+    try {
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+        $client = [System.Net.WebClient]::new()
+        try {
+            $client.Headers.Add('User-Agent', 'ArenaRobloxBridge/' + (Get-InstalledVersion))
+            $client.DownloadFile($script:UpdateZipUrl, $ZipPath)
+        } finally {
+            $client.Dispose()
+        }
+        if (-not (Test-Path -LiteralPath $ZipPath)) { return $null }
+        $extractTo = Join-Path $script:StagingDir ("tmp_" + $Version)
+        if (Test-Path -LiteralPath $extractTo) { Remove-Item -LiteralPath $extractTo -Recurse -Force -ErrorAction SilentlyContinue }
+        Expand-Archive -LiteralPath $ZipPath -DestinationPath $extractTo -Force
+        $inner = Get-ChildItem -LiteralPath $extractTo -Directory | Select-Object -First 1
+        if (-not $inner) { return $null }
+        $target = Join-Path $script:StagingDir ("v" + $Version)
+        if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue }
+        Copy-Item -LiteralPath $inner.FullName -Destination $target -Recurse -Force
+        # Version verifizieren
+        $vp = Join-Path $target 'version.json'
+        if (-not (Test-Path -LiteralPath $vp)) { return $null }
+        $obj = Get-Content -LiteralPath $vp -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (-not $obj -or ([string]$obj.version) -ne $Version) { return $null }
+        try { Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue } catch {}
+        try { Remove-Item -LiteralPath $extractTo -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+        Write-RuntimeLog "Update $Version erfolgreich gestaged: $target"
+        return $target
+    } catch {
+        Write-RuntimeLog "Update-Download fehlgeschlagen: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Save-PendingUpdate {
+    param($VersionInfo)
+    $settings = Read-AppSettings
+    $settings['pendingUpdate'] = @{
+        version = [string]$VersionInfo.version
+        date    = (Get-Date).ToString('o')
+        notes   = @($VersionInfo.notes)
+    }
+    Save-AppSettings $settings
+}
+
+function Clear-PendingUpdate {
+    $settings = Read-AppSettings
+    $settings.Remove('pendingUpdate') | Out-Null
+    Save-AppSettings $settings
+}
+
+function Write-UpdaterScript {
+    # Kleiner Helfer im AppData-Ordner: wartet bis das Programm zu Ende ist,
+    # tauscht dann ALLE Programmdateien gegen die gestaffelte Version und
+    # startet das Programm neu. Er selbst laeuft ohne sichtbares Fenster.
+    $content = @'
+$ErrorActionPreference = 'Stop'
+param(
+    [string]$StagedDir,
+    [string]$AppRoot,
+    [string]$RepoRoot,
+    [int]$WaitPid
+)
+$log = Join-Path (Split-Path -Parent $StagedDir) 'update.log'
+function Write-Log([string]$Text) {
+    try { Add-Content -LiteralPath $log -Value ('{0:u} {1}' -f (Get-Date), $Text) -Encoding UTF8 } catch {}
+}
+Write-Log "Updater gestartet. Staged: $StagedDir"
+if ($WaitPid -gt 0) {
+    $waited = 0
+    while ($waited -lt 60) {
+        try {
+            $proc = Get-Process -Id $WaitPid -ErrorAction Stop
+            Start-Sleep -Milliseconds 500
+            $waited = $waited + 1
+        } catch {
+            break
+        }
+    }
+}
+# Kopier-Plan: der Ordner 'app' ersetzt den Programm-Ordner ($AppRoot);
+# Dateien im Repo-Stamm (version.json, CHANGELOG, README, Start Bridge.vbs,
+# docs) ersetzen den Stamm ($RepoRoot).
+function Copy-ReplaceItem([string]$Src, [string]$Dest) {
+    if (-not (Test-Path -LiteralPath $Src)) { return }
+    $item = Get-Item -LiteralPath $Src
+    if ($item.PSIsContainer) {
+        if (Test-Path -LiteralPath $Dest) {
+            Remove-Item -LiteralPath $Dest -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Copy-Item -LiteralPath $Src -Destination $Dest -Recurse -Force
+    } else {
+        Copy-Item -LiteralPath $Src -Destination $Dest -Force
+    }
+    Write-Log "Kopiert: $Src -> $Dest"
+}
+$appSource = Join-Path $StagedDir 'app'
+if (Test-Path -LiteralPath $appSource) {
+    if (Test-Path -LiteralPath $AppRoot) {
+        Get-ChildItem -LiteralPath $AppRoot -Force | Where-Object { $_.Name -ne 'ArenaBridge.ps1' } | ForEach-Object {
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    New-Item -ItemType Directory -Path $AppRoot -Force | Out-Null
+    Get-ChildItem -LiteralPath $appSource -Force | ForEach-Object {
+        Copy-ReplaceItem $_.FullName (Join-Path $AppRoot $_.Name)
+    }
+}
+foreach ($rootFile in @('version.json','CHANGELOG.md','README.md','Start Bridge.vbs','Arena Roblox Bridge.vbs','OPEN ME TO START.cmd')) {
+    $candidate = Join-Path $StagedDir $rootFile
+    if (Test-Path -LiteralPath $candidate) {
+        Copy-ReplaceItem $candidate (Join-Path $RepoRoot $rootFile)
+    }
+}
+$docsSource = Join-Path $StagedDir 'docs'
+if (Test-Path -LiteralPath $docsSource) {
+    Copy-ReplaceItem $docsSource (Join-Path $RepoRoot 'docs')
+}
+# Programm neu starten (versteckt)
+$vbs = $null
+if ($RepoRoot) { $vbs = Join-Path $RepoRoot 'Start Bridge.vbs' }
+$launcher = $null
+if ($vbs -and (Test-Path -LiteralPath $vbs)) { $launcher = 'wscript.exe'; $args = "`"$vbs`"" }
+else {
+    $launcher = 'powershell.exe'
+    $args = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File `"$(Join-Path $AppRoot 'ArenaBridge.ps1')`""
+}
+try {
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $launcher
+    $psi.Arguments = $args
+    $psi.UseShellExecute = $true
+    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    [void][System.Diagnostics.Process]::Start($psi)
+    Write-Log "Programm neu gestartet."
+} catch {
+    Write-Log "Neustart-Fehler: $($_.Exception.Message)"
+}
+'@
+    try {
+        [System.IO.File]::WriteAllText($script:UpdaterScriptPath, $content, [System.Text.UTF8Encoding]::new($true))
+        return $true
+    } catch {
+        Write-RuntimeLog "Updater-Skript konnte nicht geschrieben werden: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Start-ApplyUpdateAndRestart {
+    # Wird NACH dem OK der Update-Benachrichtigung aufgerufen: Das Programm
+    # beendet sich, der Updater tauscht die Dateien und startet neu.
+    param([string]$Version)
+    $staged = Get-StagedVersionDir $Version
+    if (-not $staged) { return $false }
+    if (-not (Write-UpdaterScript)) { return $false }
+    $launch = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+        '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-STA',
+        '-File', ('"' + $script:UpdaterScriptPath + '"'),
+        '-StagedDir', ('"' + $staged + '"'),
+        '-AppRoot', ('"' + $script:AppRoot + '"'),
+        '-RepoRoot', ('"' + $script:RepoRoot + '"'),
+        '-WaitPid', ([string]$PID)
+    ) -WindowStyle Hidden -PassThru
+    Write-RuntimeLog "Updater-Prozess gestartet (PID $($launch.Id)) fuer Version $Version - Programm wird beendet."
+    try { $window.Close() } catch {}
+    return $true
+}
+
+# ----------------------------------------------------------------------------
+# EINZELINSTANZ / DOPPELSTART
+# ----------------------------------------------------------------------------
+function Get-PortOwnerProcessId {
+    param([int]$Port)
+    try {
+        $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($connection) { return $connection.OwningProcess }
+    } catch {}
+    return 0
+}
+
+function Test-IsBridgeProcess {
+    param([int]$ProcessId)
+    if ($ProcessId -le 0) { return $false }
+    try {
+        $cmd = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+        if ($cmd -and $cmd.CommandLine -and ([string]$cmd.CommandLine).IndexOf('ArenaBridge.ps1', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return $true
+        }
+    } catch {}
+    return $false
+}
+
+function Request-SingleInstanceHandoff {
+    # Es laeuft bereits eine Bridge auf unserem Port. Statt eines Port-Fehlers
+    # wird die alte Instanz zum sauberen Schliessen aufgefordert; danach uebernimmt
+    # diese (neue) Instanz. Gibt $true zurueck, wenn der Port frei ist.
+    if (-not (Test-PortListening $script:Port)) { return $true }
+    Write-RuntimeLog "Doppelstart erkannt - alte Instanz wird zum Schliessen aufgefordert."
+    try {
+        $body = '{"handoff":true,"nonce":"' + [guid]::NewGuid().ToString('N') + '"}'
+        $request = [System.Net.HttpWebRequest]::Create("http://127.0.0.1:$($script:Port)/internal/shutdown")
+        $request.Method = 'POST'
+        $request.ContentType = 'application/json'
+        $request.Timeout = 4000
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+        $request.ContentLength = $bytes.Length
+        $stream = $request.GetRequestStream()
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Dispose()
+        try { $response = $request.GetResponse(); $response.Close() } catch {}
+    } catch {
+        Write-RuntimeLog "Handoff-Anfrage nicht zustellbar: $($_.Exception.Message)"
+    }
+
+    $deadline = (Get-Date).AddSeconds(25)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Test-PortListening $script:Port)) { return $true }
+        Start-Sleep -Milliseconds 400
+    }
+    # Alte Instanz reagiert nicht mehr -> nur beenden, wenn es wirklich eine Bridge ist.
+    $owner = Get-PortOwnerProcessId $script:Port
+    if (Test-IsBridgeProcess $owner) {
+        Write-RuntimeLog "Alte Instanz antwortet nicht (PID $owner) - wird beendet."
+        try { Stop-Process -Id $owner -Force -ErrorAction Stop } catch {
+            Write-RuntimeLog "Alte Instanz konnte nicht beendet werden: $($_.Exception.Message)"
+            return $false
+        }
+        Start-Sleep -Seconds 2
+        return (-not (Test-PortListening $script:Port))
+    }
+    return $false
 }
 
 # ----------------------------------------------------------------------------
@@ -9737,21 +11080,24 @@ $xaml = @'
             </Grid>
 
             <Border x:Name="SettingsPanel" Grid.Row="1" Visibility="Collapsed" Panel.ZIndex="60"
-                    HorizontalAlignment="Right" VerticalAlignment="Top" Width="300"
-                    CornerRadius="14" Background="#101C33" BorderBrush="#2F7DFF" BorderThickness="1"
-                    Padding="18" Margin="0,6,54,0">
+                    HorizontalAlignment="Right" VerticalAlignment="Top" Width="390" MaxHeight="565"
+                    CornerRadius="14" Background="#0E1A2F" BorderBrush="#2F7DFF" BorderThickness="1"
+                    Padding="0" Margin="0,6,54,0">
                 <Border.Effect>
                     <DropShadowEffect Color="#000000" Opacity="0.55" BlurRadius="22" ShadowDepth="0"/>
                 </Border.Effect>
-                <StackPanel>
-                    <TextBlock Text="Einstellungen" Foreground="{StaticResource TextMain}" FontSize="16" FontWeight="Bold"/>
-                    <TextBlock Text="Programmoptionen für diese Bridge" Foreground="{StaticResource TextMuted}" FontSize="11.5" Margin="0,4,0,0"/>
-                    <Border Height="1" Background="{StaticResource Line}" Margin="0,15,0,15"/>
-                    <CheckBox x:Name="StartupCheckBox" Content="Beim PC-Start automatisch öffnen"/>
-                    <TextBlock Text="Startet Arena Roblox Bridge automatisch mit Windows und verbindet Places im Hintergrund." Foreground="{StaticResource TextFaint}" FontSize="11" TextWrapping="Wrap" Margin="31,7,0,0"/>
-                    <Border Height="1" Background="{StaticResource Line}" Margin="0,16,0,13"/>
-                    <TextBlock Text="Arena Roblox Bridge - Version 3.2" Foreground="{StaticResource TextFaint}" FontSize="11"/>
-                </StackPanel>
+                <ScrollViewer x:Name="SettingsScroller" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel>
+                        <StackPanel Margin="18,16,18,0">
+                            <TextBlock Text="Einstellungen" Foreground="{StaticResource TextMain}" FontSize="16" FontWeight="Bold"/>
+                            <TextBlock Text="Programmoptionen für diese Bridge" Foreground="{StaticResource TextMuted}" FontSize="11.5" Margin="0,4,0,0"/>
+                        </StackPanel>
+                        <Border Height="1" Background="{StaticResource Line}" Margin="18,14,18,4"/>
+                        <StackPanel x:Name="SettingsCategories"/>
+                        <Border Height="1" Background="{StaticResource Line}" Margin="18,8,18,12"/>
+                        <TextBlock x:Name="VersionFooter" Text="Arena Roblox Bridge - Version 3.3.0" Foreground="{StaticResource TextFaint}" FontSize="11" Margin="18,0,18,16"/>
+                    </StackPanel>
+                </ScrollViewer>
             </Border>
 
             <StackPanel x:Name="ToastHost" Grid.Row="1" Panel.ZIndex="80" IsHitTestVisible="False"
@@ -9790,9 +11136,11 @@ $PlacesCountText = $window.FindName('PlacesCountText')
 $LiveBadge       = $window.FindName('LiveBadge')
 $LiveDot         = $window.FindName('LiveDot')
 $LiveText        = $window.FindName('LiveText')
-$SettingsPanel   = $window.FindName('SettingsPanel')
-$StartupCheckBox = $window.FindName('StartupCheckBox')
-$SettingsButton  = $window.FindName('SettingsButton')
+$SettingsPanel        = $window.FindName('SettingsPanel')
+$SettingsCategories   = $window.FindName('SettingsCategories')
+$SettingsButton       = $window.FindName('SettingsButton')
+$VersionFooter        = $window.FindName('VersionFooter')
+$SettingsScroller     = $window.FindName('SettingsScroller')
 $MinimizeButton  = $window.FindName('MinimizeButton')
 $CloseButton     = $window.FindName('CloseButton')
 $PulseDot        = $window.FindName('PulseDot')
@@ -10394,17 +11742,23 @@ function New-Row {
     $popup.Tag = [pscustomobject]@{ ClosedAt = [DateTime]::MinValue }
     $popup.Add_Closed({ param($s, $e) $s.Tag.ClosedAt = [DateTime]::UtcNow })
     $menuButton.Tag = [pscustomobject]@{ Popup = $popup }
+    # Der Button ist ein TOGGLE (seit 3.3): Ist das Menue offen, schliesst der
+    # Klick es. Ist es zu, oeffnet der Klick es. Kein erneutes Aufspringen mit
+    # Animation, waehrend die Schluss-Animation noch laeuft (350-ms-Sperre).
     $menuButton.Add_Click({
         param($s, $e)
         try {
             $target = $s.Tag.Popup
             if ($null -eq $target) { return }
+            if ($target.IsOpen) {
+                $target.IsOpen = $false
+                $target.Tag.ClosedAt = [DateTime]::UtcNow
+                return
+            }
             $closedAt = $target.Tag.ClosedAt
             if ($closedAt -isnot [DateTime]) { $closedAt = [DateTime]::MinValue }
-            # Das Popup schliesst bei einem Klick auf den Button von selbst
-            # (StaysOpen=False). Ohne diese Sperre ginge es sofort wieder auf.
-            if (([DateTime]::UtcNow - $closedAt).TotalMilliseconds -lt 300) { return }
-            if (-not $target.IsOpen) { $target.IsOpen = $true }
+            if (([DateTime]::UtcNow - $closedAt).TotalMilliseconds -lt 350) { return }
+            $target.IsOpen = $true
         } catch {}
     })
 
@@ -10625,6 +11979,566 @@ function Sync-PlaceList {
 }
 
 # ----------------------------------------------------------------------------
+# EINSTELLUNGEN ALS AUFKLAPPBARE KATEGORIEN (max. eine gleichzeitig offen)
+# ----------------------------------------------------------------------------
+$script:AccordionSections = @{}
+$script:AccordionOrder = New-Object System.Collections.Generic.List[string]
+$script:OpenAccordionKey = $null
+
+function New-AccordionHeader {
+    param([string]$Key, [string]$Title, [string]$Subtitle, [string]$Glyph, [string]$Accent = '#7FB3FF')
+    $header = [System.Windows.Controls.Border]::new()
+    $header.CornerRadius = [System.Windows.CornerRadius]::new(10)
+    $header.Background = Get-Brush '#0D1A2E'
+    $header.BorderBrush = Get-Brush '#1E3A68'
+    $header.BorderThickness = [System.Windows.Thickness]::new(1)
+    $header.Padding = [System.Windows.Thickness]::new(10, 8, 10, 8)
+    $header.Margin = [System.Windows.Thickness]::new(14, 4, 14, 0)
+    $header.Cursor = [System.Windows.Input.Cursors]::Hand
+    $header.Tag = $Key
+
+    $grid = [System.Windows.Controls.Grid]::new()
+    $c0 = [System.Windows.Controls.ColumnDefinition]::new(); $c0.Width = [System.Windows.GridLength]::new(30)
+    $c1 = [System.Windows.Controls.ColumnDefinition]::new()
+    $c2 = [System.Windows.Controls.ColumnDefinition]::new(); $c2.Width = [System.Windows.GridLength]::Auto
+    $grid.ColumnDefinitions.Add($c0); $grid.ColumnDefinitions.Add($c1); $grid.ColumnDefinitions.Add($c2)
+
+    $iconBox = [System.Windows.Controls.Border]::new()
+    $iconBox.Width = 28; $iconBox.Height = 28
+    $iconBox.CornerRadius = [System.Windows.CornerRadius]::new(8)
+    $iconBox.Background = Get-Brush '#12294C'
+    $iconText = [System.Windows.Controls.TextBlock]::new()
+    $iconText.Text = $Glyph
+    $iconText.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $iconText.FontSize = 13
+    $iconText.Foreground = Get-Brush $Accent
+    $iconText.HorizontalAlignment = 'Center'
+    $iconText.VerticalAlignment = 'Center'
+    $iconBox.Child = $iconText
+
+    $texts = [System.Windows.Controls.StackPanel]::new()
+    $texts.VerticalAlignment = 'Center'
+    $texts.Margin = [System.Windows.Thickness]::new(11, 0, 6, 0)
+    $titleBlock = [System.Windows.Controls.TextBlock]::new()
+    $titleBlock.Text = $Title
+    $titleBlock.Foreground = Get-Brush '#E6F0FF'
+    $titleBlock.FontSize = 13
+    $titleBlock.FontWeight = 'SemiBold'
+    $subBlock = [System.Windows.Controls.TextBlock]::new()
+    $subBlock.Text = $Subtitle
+    $subBlock.Foreground = Get-Brush '#8FA6CA'
+    $subBlock.FontSize = 10.5
+    $subBlock.Margin = [System.Windows.Thickness]::new(0, 2, 0, 0)
+    $subBlock.TextTrimming = 'CharacterEllipsis'
+    $texts.Children.Add($titleBlock) | Out-Null
+    $texts.Children.Add($subBlock) | Out-Null
+
+    $chevron = [System.Windows.Controls.TextBlock]::new()
+    $chevron.Text = [char]0xE76C
+    $chevron.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $chevron.FontSize = 12
+    $chevron.Foreground = Get-Brush '#8FA6CA'
+    $chevron.VerticalAlignment = 'Center'
+
+    [System.Windows.Controls.Grid]::SetColumn($iconBox, 0)
+    [System.Windows.Controls.Grid]::SetColumn($texts, 1)
+    [System.Windows.Controls.Grid]::SetColumn($chevron, 2)
+    $grid.Children.Add($iconBox) | Out-Null
+    $grid.Children.Add($texts) | Out-Null
+    $grid.Children.Add($chevron) | Out-Null
+    $header.Child = $grid
+
+    $header.Add_MouseEnter({ param($s, $e) $s.Background = Get-Brush '#14264A'; $s.BorderBrush = Get-Brush '#2F5FB0' })
+    $header.Add_MouseLeave({ param($s, $e)
+        $key = [string]$s.Tag
+        if ($script:OpenAccordionKey -eq $key) {
+            $s.Background = Get-Brush '#14264A'
+            $s.BorderBrush = Get-Brush '#2F7DFF'
+        } else {
+            $s.Background = Get-Brush '#0D1A2E'
+            $s.BorderBrush = Get-Brush '#1E3A68'
+        }
+    })
+
+    return [pscustomobject]@{
+        Key     = $Key
+        Header  = $header
+        Chevron = $chevron
+        Title   = $titleBlock
+        Sub     = $subBlock
+    }
+}
+
+function Set-AccordionBody {
+    param([string]$Key, $Body)
+    if ($script:AccordionSections.ContainsKey($Key)) {
+        $script:AccordionSections[$Key].Body = $Body
+    }
+}
+
+function Show-AccordionCategory {
+    param([string]$Key)
+    $previous = $script:OpenAccordionKey
+    if ($previous -and $previous -ne $Key -and $script:AccordionSections.ContainsKey($previous)) {
+        $old = $script:AccordionSections[$previous]
+        if ($old.Body) { $old.Body.Visibility = 'Collapsed' }
+        $old.Chevron.Text = [char]0xE76C
+        $old.Header.Background = Get-Brush '#0D1A2E'
+        $old.Header.BorderBrush = Get-Brush '#1E3A68'
+    }
+    if ($Key -and $script:AccordionSections.ContainsKey($Key)) {
+        $cur = $script:AccordionSections[$Key]
+        if ($previous -eq $Key) {
+            # Klick auf die bereits offene Kategorie schliesst sie
+            if ($cur.Body) { $cur.Body.Visibility = 'Collapsed' }
+            $cur.Chevron.Text = [char]0xE76C
+            $cur.Header.Background = Get-Brush '#0D1A2E'
+            $cur.Header.BorderBrush = Get-Brush '#1E3A68'
+            $script:OpenAccordionKey = $null
+        } else {
+            if ($cur.Body) { $cur.Body.Visibility = 'Visible' }
+            $cur.Chevron.Text = [char]0xE70D
+            $cur.Header.Background = Get-Brush '#14264A'
+            $cur.Header.BorderBrush = Get-Brush '#2F7DFF'
+            $script:OpenAccordionKey = $Key
+        }
+    }
+}
+
+function Add-SettingsCategory {
+    param([string]$Key, [string]$Title, [string]$Subtitle, [string]$Glyph, [string]$Accent = '#7FB3FF')
+    $section = New-AccordionHeader $Key $Title $Subtitle $Glyph $Accent
+    $body = [System.Windows.Controls.StackPanel]::new()
+    $body.Visibility = 'Collapsed'
+    $body.Margin = [System.Windows.Thickness]::new(14, 0, 14, 4)
+
+    $section.Header.Add_MouseLeftButtonUp({ param($s, $e) Show-AccordionCategory ([string]$s.Tag) })
+    $SettingsCategories.Children.Add($section.Header) | Out-Null
+    $SettingsCategories.Children.Add($body) | Out-Null
+
+    $script:AccordionSections[$Key] = [pscustomobject]@{
+        Key = $Key; Header = $section.Header; Chevron = $section.Chevron; Body = $body
+    }
+    $script:AccordionOrder.Add($Key)
+    return $body
+}
+
+function New-SettingsHint {
+    param([string]$Text)
+    $hint = [System.Windows.Controls.TextBlock]::new()
+    $hint.Text = $Text
+    $hint.Foreground = Get-Brush '#8FA6CA'
+    $hint.FontSize = 11
+    $hint.TextWrapping = 'Wrap'
+    $hint.Margin = [System.Windows.Thickness]::new(2, 8, 2, 2)
+    return $hint
+}
+
+function Initialize-SettingsAccordion {
+    # ---------- Kategorie: Updates ----------
+    $updates = Add-SettingsCategory -Key 'updates' -Title 'Updates' -Subtitle 'Version, Update-Status und Suche' -Glyph ([char]0xE895) -Accent '#7FB3FF'
+
+    $updateHead = New-SettingsHint 'Das Programm aktualisiert sich automatisch über GitHub.'
+    $updateStatus = [System.Windows.Controls.TextBlock]::new()
+    $updateStatus.Name = 'UpdateStatusText'
+    $updateStatus.Text = 'Kein Update verfügbar – das Programm ist auf dem neuesten Stand.'
+    $updateStatus.Foreground = Get-Brush '#22C55E'
+    $updateStatus.FontSize = 11.5
+    $updateStatus.FontWeight = 'SemiBold'
+    $updateStatus.TextWrapping = 'Wrap'
+    $updateStatus.Margin = [System.Windows.Thickness]::new(2, 8, 2, 2)
+    $versionLine = New-SettingsHint ('Installierte Version: ' + (Get-InstalledVersion))
+    $versionLine.Foreground = Get-Brush '#6F87AE'
+
+    $checkButton = [System.Windows.Controls.Button]::new()
+    $checkButton.Content = 'Jetzt nach Updates suchen'
+    $checkButton.HorizontalAlignment = 'Left'
+    $checkButton.Margin = [System.Windows.Thickness]::new(2, 12, 0, 2)
+    $checkButton.Add_Click({
+        $checkButton.IsEnabled = $false
+        try {
+            $found = Start-UpdateSearch -Interactive
+        } catch {
+            Show-Toast -Message "Update-Suche fehlgeschlagen: $($_.Exception.Message)" -Kind 'Error' -Seconds 6
+        } finally {
+            $checkButton.IsEnabled = $true
+        }
+    })
+    $updates.Children.Add($updateHead) | Out-Null
+    $updates.Children.Add($updateStatus) | Out-Null
+    $updates.Children.Add($versionLine) | Out-Null
+    $updates.Children.Add($checkButton) | Out-Null
+
+    # ---------- Kategorie: Sonstiges ----------
+    $misc = Add-SettingsCategory -Key 'sonstiges' -Title 'Sonstiges' -Subtitle 'Autostart und Neustart' -Glyph ([char]0xE713) -Accent '#8FFFC7'
+
+    $autostartBox = [System.Windows.Controls.CheckBox]::new()
+    $autostartBox.Content = 'Automatisch mit Windows starten'
+    $autostartBox.IsChecked = Get-StartupEnabled
+    $autostartBox.Margin = [System.Windows.Thickness]::new(2, 10, 2, 0)
+    $autostartBox.Add_Click({
+        try {
+            Set-StartupEnabled ([bool]$autostartBox.IsChecked)
+            if ($autostartBox.IsChecked) {
+                Show-Toast -Message 'Autostart ist aktiviert.' -Kind 'Success'
+            } else {
+                Show-Toast -Message 'Autostart ist deaktiviert.' -Kind 'Info'
+            }
+        } catch {
+            Show-Toast -Message "Der Autostart konnte nicht geändert werden: $($_.Exception.Message)" -Kind 'Error' -Seconds 6
+            $autostartBox.IsChecked = Get-StartupEnabled
+        }
+    })
+    $autostartHint = New-SettingsHint 'Startet Arena Roblox Bridge automatisch mit Windows und verbindet Places im Hintergrund.'
+    $autostartHint.Foreground = Get-Brush '#6F87AE'
+
+    $sep = [System.Windows.Controls.Border]::new()
+    $sep.Height = 1
+    $sep.Background = Get-Brush '#1B3259'
+    $sep.Margin = [System.Windows.Thickness]::new(0, 12, 0, 12)
+
+    $restartStack = [System.Windows.Controls.StackPanel]::new()
+    $restartRowTitle = [System.Windows.Controls.TextBlock]::new()
+    $restartRowTitle.Text = 'Programm neu starten'
+    $restartRowTitle.Foreground = Get-Brush '#E6F0FF'
+    $restartRowTitle.FontSize = 12.5
+    $restartRowTitle.FontWeight = 'SemiBold'
+    $restartRowSub = New-SettingsHint 'Schließt das Fenster und öffnet das Programm automatisch wieder (z.B. nach einem Update).'
+    $restartRowSub.Margin = [System.Windows.Thickness]::new(2, 4, 2, 8)
+    $restartButton = [System.Windows.Controls.Button]::new()
+    $restartButton.Content = 'Jetzt neu starten'
+    $restartButton.HorizontalAlignment = 'Left'
+    $restartButton.Add_Click({ Restart-BridgeApp })
+    $restartStack.Children.Add($restartRowTitle) | Out-Null
+    $restartStack.Children.Add($restartRowSub) | Out-Null
+    $restartStack.Children.Add($restartButton) | Out-Null
+
+    $misc.Children.Add($autostartBox) | Out-Null
+    $misc.Children.Add($autostartHint) | Out-Null
+    $misc.Children.Add($sep) | Out-Null
+    $misc.Children.Add($restartStack) | Out-Null
+
+    # ---------- Kategorie: Key fuer alle Places ----------
+    $key = Add-SettingsCategory -Key 'placeskey' -Title 'Key für alle Places' -Subtitle 'Ein Zugang für alle verbundenen Places' -Glyph ([char]0xE72E) -Accent '#FFD48A'
+
+    $keyIntro = New-SettingsHint 'Ein gemeinsamer Key erreicht alle verbundenen Places. Arena AI sieht über GET /api/places immer die Übersicht und wählt den Place über args.place aus.'
+    $keyScope = [System.Windows.Controls.TextBlock]::new()
+    $keyScope.Name = 'KeyScopeText'
+    $keyScope.Text = ''
+    $keyScope.Foreground = Get-Brush '#C3D5F0'
+    $keyScope.FontSize = 11.5
+    $keyScope.TextWrapping = 'Wrap'
+    $keyScope.Margin = [System.Windows.Thickness]::new(2, 8, 2, 2)
+    $keyMode = [System.Windows.Controls.TextBlock]::new()
+    $keyMode.Name = 'KeyModeText'
+    $keyMode.Text = ''
+    $keyMode.Foreground = Get-Brush '#C3D5F0'
+    $keyMode.FontSize = 11.5
+    $keyMode.TextWrapping = 'Wrap'
+    $keyMode.Margin = [System.Windows.Thickness]::new(2, 2, 2, 2)
+
+    $copyKeyButton = [System.Windows.Controls.Button]::new()
+    $copyKeyButton.Content = 'Prompt kopieren (alle Places)'
+    $copyKeyButton.HorizontalAlignment = 'Left'
+    $copyKeyButton.Margin = [System.Windows.Thickness]::new(2, 10, 0, 0)
+    $copyKeyButton.Add_Click({ Copy-GlobalPrompt })
+
+    $resetKeyButton = [System.Windows.Controls.Button]::new()
+    $resetKeyButton.Content = 'Key zurücksetzen (alle Places)'
+    $resetKeyButton.HorizontalAlignment = 'Left'
+    $resetKeyButton.Margin = [System.Windows.Thickness]::new(2, 8, 0, 0)
+    $resetKeyButton.Add_Click({
+        try {
+            Set-AccessKey (New-Token)
+            Show-Toast -Message 'Neuer Key für alle Places wurde erstellt. Kopiere den Prompt neu.' -Kind 'Success'
+        } catch {
+            Show-Toast -Message "Key konnte nicht zurückgesetzt werden: $($_.Exception.Message)" -Kind 'Error' -Seconds 6
+        }
+    })
+
+    $modeKeyButton = [System.Windows.Controls.Button]::new()
+    $modeKeyButton.Content = 'Lese-/Schreib-Modus für alle Places einstellen'
+    $modeKeyButton.HorizontalAlignment = 'Left'
+    $modeKeyButton.Margin = [System.Windows.Thickness]::new(2, 8, 0, 0)
+    $modeKeyButton.Add_Click({
+        try {
+            foreach ($pair in @($script:Shared.Sessions.GetEnumerator())) {
+                Set-SessionMode ([string]$pair.Key) 'readwrite'
+            }
+            foreach ($row in @($script:UiRows.Values)) {
+                Set-RowMode $row 'readwrite' -Silent
+                $row.ModeUntil = [DateTime]::UtcNow.AddSeconds(3)
+            }
+            Show-Toast -Message 'Alle Places sind wieder im Lese-/Schreib-Modus.' -Kind 'Success'
+        } catch {
+            Show-Toast -Message "Modus konnte nicht gesetzt werden: $($_.Exception.Message)" -Kind 'Error' -Seconds 6
+        }
+    })
+
+    $key.Children.Add($keyIntro) | Out-Null
+    $key.Children.Add($keyScope) | Out-Null
+    $key.Children.Add($keyMode) | Out-Null
+    $key.Children.Add($copyKeyButton) | Out-Null
+    $key.Children.Add($resetKeyButton) | Out-Null
+    $key.Children.Add($modeKeyButton) | Out-Null
+
+    Update-SettingsDynamicInfo
+}
+
+function Copy-GlobalPrompt {
+    if ([string]::IsNullOrWhiteSpace($script:TunnelUrl)) {
+        Show-Toast -Message 'Der Cloudflare-Tunnel ist noch nicht bereit.' -Kind 'Warn' -Seconds 5
+        return
+    }
+    $key = Get-AccessKey
+    $places = @(Get-ActiveStudios)
+    $lines = @("URL=$script:TunnelUrl", "TOKEN=$key", 'ALL_PLACES=true')
+    foreach ($place in $places) {
+        $lines += ("PLACE=" + $place.placeId + "|" + $place.placeName)
+    }
+    try {
+        [System.Windows.Clipboard]::SetText(($lines -join "`r`n"))
+        Show-Toast -Message 'Prompt (alle Places) in die Zwischenablage kopiert.' -Kind 'Success'
+    } catch {
+        Show-Toast -Message "Zwischenablage blockiert: $($_.Exception.Message)" -Kind 'Error' -Seconds 6
+    }
+}
+
+function Update-SettingsDynamicInfo {
+    try {
+        if (-not $script:AccordionSections.ContainsKey('placeskey')) { return }
+        $sections = $script:AccordionSections
+        $keyScope = $null
+        $keyMode = $null
+        foreach ($sid in @($sections['placeskey'].Body.Children)) {
+            if ($sid.Name -eq 'KeyScopeText') { $keyScope = $sid }
+            if ($sid.Name -eq 'KeyModeText') { $keyMode = $sid }
+        }
+        $places = @(Get-ActiveStudios)
+        if ($keyScope) {
+            if ($places.Count -eq 0) {
+                $keyScope.Text = 'Noch kein Place verbunden. Öffne ein Place in Roblox Studio.'
+                $keyScope.Foreground = Get-Brush '#FFD48A'
+            } else {
+                $names = ($places | ForEach-Object { $_.placeName }) -join ', '
+                $keyScope.Text = "$($places.Count) Places verbunden: $names"
+                $keyScope.Foreground = Get-Brush '#C3D5F0'
+            }
+        }
+        if ($keyMode) {
+            $readonly = @($places | Where-Object { [string]$_.accessMode -eq 'readonly' }).Count
+            if ($readonly -gt 0) {
+                $keyMode.Text = "$readonly von $($places.Count) Places sind schreibgeschützt. Mit dem Button unten wird wieder überall Schreibzugriff erlaubt."
+                $keyMode.Foreground = Get-Brush '#FFD48A'
+            } else {
+                $keyMode.Text = 'Alle Places haben Lese- und Schreibzugriff.'
+                $keyMode.Foreground = Get-Brush '#22C55E'
+            }
+        }
+    } catch {}
+}
+
+function Start-UpdateSearch {
+    # Kehrt mit einem Versionsinfo-Objekt zurueck, wenn ein NEUERES Update
+    # verfuegbar ist; sonst $null. -Interactive zeigt Toasts an.
+    param([switch]$Interactive)
+    $info = Get-RemoteVersionInfo -Force
+    if ($null -eq $info) {
+        if ($Interactive) { Show-Toast -Message 'Keine Verbindung zu GitHub (oder keine Antwort). Später erneut versuchen.' -Kind 'Warn' -Seconds 6 }
+        return $null
+    }
+    $remote = [string]$info.version
+    $local = Get-InstalledVersion
+    if ((Compare-Versions $remote $local) -le 0) {
+        if ($Interactive) { Show-Toast -Message 'Kein Update verfügbar – du bist auf dem neuesten Stand.' -Kind 'Success' }
+        return $null
+    }
+    return $info
+}
+
+function Update-StatusText {
+    # Setzt den Text der Update-Kategorie. Wird beim Start, nach jeder Suche
+    # und nach einem Update gesetzt.
+    param([string]$Text, [string]$Hex = '#22C55E')
+    if (-not $script:AccordionSections.ContainsKey('updates')) { return }
+    $children = $script:AccordionSections['updates'].Body.Children
+    foreach ($child in $children) {
+        if ($child.Name -eq 'UpdateStatusText') {
+            $child.Text = $Text
+            $child.Foreground = Get-Brush $Hex
+        }
+    }
+}
+
+$script:UpdateDialogOpen = $false
+
+function Show-UpdateNotification {
+    # Persistente Update-Benachrichtigung: zeigt die neue Version und die
+    # Aenderungen. Sie verschwindet erst mit OK (auch ueber Programmstarts
+    # hinweg - pendingUpdate bleibt so lange in settings.json stehen).
+    param($PendingInfo)
+    $script:UpdateDialogOpen = $true
+    try {
+        $version = [string]$PendingInfo.version
+        $date = [string]$PendingInfo.date
+        $notes = @($PendingInfo.notes)
+
+        $dialog = [System.Windows.Window]::new()
+        $dialog.Title = 'Update verfügbar'
+        $dialog.Width = 540
+        $dialog.Height = 480
+        $dialog.MinWidth = 520
+        $dialog.MinHeight = 420
+        $dialog.WindowStartupLocation = 'CenterOwner'
+        $dialog.Owner = $window
+        $dialog.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#0E1A2F')
+        $dialog.Foreground = Get-Brush '#E6F0FF'
+        $dialog.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe UI')
+        $dialog.ResizeMode = 'NoResize'
+        $okClicked = $false
+
+        $root = [System.Windows.Controls.Grid]::new()
+        $root.Margin = [System.Windows.Thickness]::new(22, 18, 22, 18)
+        $rows = [System.Windows.Controls.RowDefinition]::new(); $rows.Height = [System.Windows.GridLength]::Auto
+        $rows2 = [System.Windows.Controls.RowDefinition]::new(); $rows2.Height = [System.Windows.GridLength]::Auto
+        $rows3 = [System.Windows.Controls.RowDefinition]::new(); $rows3.Height = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+        $rows4 = [System.Windows.Controls.RowDefinition]::new(); $rows4.Height = [System.Windows.GridLength]::Auto
+        $root.RowDefinitions.Add($rows); $root.RowDefinitions.Add($rows2); $root.RowDefinitions.Add($rows3); $root.RowDefinitions.Add($rows4)
+
+        $head = [System.Windows.Controls.TextBlock]::new()
+        $head.Text = "Update auf Version $version"
+        $head.FontSize = 22
+        $head.FontWeight = 'Bold'
+        $head.Foreground = Get-Brush '#7DB3FF'
+        $root.Children.Add($head) | Out-Null
+
+        $sub = [System.Windows.Controls.TextBlock]::new()
+        $sub.Text = 'Das Programm hat sich automatisch aktualisiert. Dieses Update wird erst aktiv, wenn du OK klickst – danach startet das Programm mit der neuen Version neu.'
+        $sub.FontSize = 12.5
+        $sub.TextWrapping = 'Wrap'
+        $sub.Foreground = Get-Brush '#C3D5F0'
+        $sub.Margin = [System.Windows.Thickness]::new(0, 8, 0, 0)
+        [System.Windows.Controls.Grid]::SetRow($sub, 1)
+        $root.Children.Add($sub) | Out-Null
+
+        $notesBox = [System.Windows.Controls.Border]::new()
+        $notesBox.CornerRadius = [System.Windows.CornerRadius]::new(12)
+        $notesBox.Background = Get-Brush '#091321'
+        $notesBox.BorderBrush = Get-Brush '#1E3A68'
+        $notesBox.BorderThickness = [System.Windows.Thickness]::new(1)
+        $notesBox.Margin = [System.Windows.Thickness]::new(0, 14, 0, 14)
+        $notesBox.Padding = [System.Windows.Thickness]::new(4)
+        $scroller = [System.Windows.Controls.ScrollViewer]::new()
+        $scroller.VerticalScrollBarVisibility = 'Auto'
+        $stack = [System.Windows.Controls.StackPanel]::new()
+        $stack.Margin = [System.Windows.Thickness]::new(12, 10, 12, 10)
+        $title = [System.Windows.Controls.TextBlock]::new()
+        $title.Text = 'Was sich geändert hat:'
+        $title.FontWeight = 'SemiBold'
+        $title.FontSize = 12.5
+        $title.Foreground = Get-Brush '#E6F0FF'
+        $stack.Children.Add($title) | Out-Null
+        if ($notes.Count -eq 0) { $notes = @('Verbesserungen und Fehlerbehebungen (Details: CHANGELOG.md im Programm-Ordner).') }
+        foreach ($note in $notes) {
+            $line = [System.Windows.Controls.TextBlock]::new()
+            $line.Text = '• ' + [string]$note
+            $line.TextWrapping = 'Wrap'
+            $line.FontSize = 12
+            $line.Foreground = Get-Brush '#C3D5F0'
+            $line.Margin = [System.Windows.Thickness]::new(0, 5, 0, 0)
+            $stack.Children.Add($line) | Out-Null
+        }
+        $scroller.Content = $stack
+        $notesBox.Child = $scroller
+        [System.Windows.Controls.Grid]::SetRow($notesBox, 2)
+        $root.Children.Add($notesBox) | Out-Null
+
+        $buttonRow = [System.Windows.Controls.StackPanel]::new()
+        $buttonRow.Orientation = 'Horizontal'
+        $buttonRow.HorizontalAlignment = 'Right'
+        $okButton = [System.Windows.Controls.Button]::new()
+        $okButton.Content = 'OK'
+        $okButton.MinWidth = 110
+        $okButton.MinHeight = 38
+        $okButton.FontSize = 14
+        $okButton.FontWeight = 'Bold'
+        $okButton.Add_Click({ param($s, $e) $okClicked = $true; $dialog.Close() })
+        $buttonRow.Children.Add($okButton) | Out-Null
+        [System.Windows.Controls.Grid]::SetRow($buttonRow, 3)
+        $root.Children.Add($buttonRow) | Out-Null
+
+        $dialog.Content = $root
+        $dialog.Add_Closing({
+            param($s, $e)
+            if (-not $okClicked) { $e.Cancel = $true }
+        })
+        [void]$dialog.ShowDialog()
+        return $okClicked
+    } finally {
+        $script:UpdateDialogOpen = $false
+    }
+}
+
+function Start-AutoUpdateFlow {
+    # Wird beim Programmstart aufgerufen (UI-Thread). Reihenfolge:
+    #   1. Liegt schon ein fertig geladenes Update da (pendingUpdate + Staging)?
+    #      -> Benachrichtigung zeigen; OK = anwenden + neu starten.
+    #   2. Sonst im Hintergrund nachsehen (nur alle UpdateCheckHours Stunden).
+    #   3. Bei neuer Version: herunterladen/stagen, pendingUpdate merken,
+    #      Benachrichtigung zeigen.
+    $script:UpdateCheckRunning = $true
+    try {
+        # 1) Bereits gestaffeltes, noch nicht quittiertes Update?
+        $ready = Test-UpdateReady
+        if ($ready) {
+            $settings = Read-AppSettings
+            $pending = $settings['pendingUpdate']
+            if ($pending -and (Compare-Versions $ready (Get-InstalledVersion)) -gt 0) {
+                Update-StatusText "Update auf $ready ist bereit – klicke OK zum Aktivieren." '#FFD48A'
+                $ok = Show-UpdateNotification $pending
+                if ($ok) {
+                    Clear-PendingUpdate
+                    Start-ApplyUpdateAndRestart $ready
+                }
+                return
+            }
+            Clear-PendingUpdate
+        }
+
+        # 2+3) Regulaere Suche (respektiert lastUpdateCheck ausser nach Neustart)
+        $info = $null
+        try { $info = Get-RemoteVersionInfo } catch {}
+        if ($null -eq $info) {
+            Update-StatusText 'Kein Update verfügbar – das Programm ist auf dem neuesten Stand und aktualisiert sich automatisch.'
+            return
+        }
+        if ((Compare-Versions ([string]$info.version) (Get-InstalledVersion)) -le 0) {
+            Update-StatusText 'Kein Update verfügbar – das Programm ist auf dem neuesten Stand und aktualisiert sich automatisch.'
+            return
+        }
+        # Neues Update gefunden -> im Hintergrund herunterladen und stagen
+        Update-StatusText ("Update " + $info.version + " wird im Hintergrund heruntergeladen …") '#FFD48A'
+        $staged = Start-StageUpdateBinary ([string]$info.version) (Join-Path $script:StagingDir ("update_" + [string]$info.version + '.zip'))
+        if (-not $staged) {
+            Update-StatusText ("Update " + $info.version + " konnte nicht heruntergeladen werden (Verbindung?). Beim nächsten Start wird es erneut versucht.") '#FF6B6B'
+            return
+        }
+        Save-PendingUpdate $info
+        Update-StatusText ("Update auf " + $info.version + " ist bereit – klicke OK zum Aktivieren.") '#FFD48A'
+        $ok = Show-UpdateNotification $info
+        if ($ok) {
+            Clear-PendingUpdate
+            Start-ApplyUpdateAndRestart ([string]$info.version)
+        }
+    } catch {
+        Write-RuntimeLog "Auto-Update-Fehler: $($_.Exception.Message)"
+        try { Update-StatusText 'Update-Prüfung fehlgeschlagen – Details in der Logdatei.' '#FF6B6B' } catch {}
+    } finally {
+        $script:UpdateCheckRunning = $false
+    }
+}
+
+# ----------------------------------------------------------------------------
 # FENSTERSTEUERUNG
 # ----------------------------------------------------------------------------
 $TitleBar.Add_MouseLeftButtonDown({
@@ -10657,20 +12571,7 @@ $window.Add_PreviewMouseDown({
     } catch {}
 })
 
-$StartupCheckBox.IsChecked = Get-StartupEnabled
-$StartupCheckBox.Add_Click({
-    try {
-        Set-StartupEnabled ([bool]$StartupCheckBox.IsChecked)
-        if ($StartupCheckBox.IsChecked) {
-            Show-Toast -Message 'Autostart ist aktiviert.' -Kind 'Success'
-        } else {
-            Show-Toast -Message 'Autostart ist deaktiviert.' -Kind 'Info'
-        }
-    } catch {
-        Show-Toast -Message "Der Autostart konnte nicht geändert werden: $($_.Exception.Message)" -Kind 'Error' -Seconds 6
-        $StartupCheckBox.IsChecked = Get-StartupEnabled
-    }
-})
+Initialize-SettingsAccordion
 
 $window.Add_Loaded({
     $window.Opacity = 0
@@ -10686,6 +12587,36 @@ $window.Add_Loaded({
         Show-Toast -Message $toast.Message -Kind $toast.Kind -Seconds $toast.Seconds
     }
     $script:PendingToasts.Clear()
+
+    # Persistente Update-Benachrichtigung / Auto-Update-Check (nach kurzer Pause)
+    try {
+        $delay = [System.Windows.Threading.DispatcherTimer]::new()
+        $delay.Interval = [System.TimeSpan]::FromMilliseconds(1200)
+        $delay.Add_Tick({
+            $delay.Stop()
+            try { Start-AutoUpdateFlow } catch {
+                Write-RuntimeLog "Auto-Update-Flow Fehler: $($_.Exception.Message)"
+            }
+        })
+        $delay.Start()
+    } catch {}
+    # Zyklische Pruefung, solange das Programm laeuft (alle 30 Minuten;
+    # die eigentliche GitHub-Abfrage passiert intern hoechstens alle
+    # UpdateCheckHours Stunden bzw. nach einem Neustart sofort).
+    try {
+        $script:UpdateTimer = [System.Windows.Threading.DispatcherTimer]::new()
+        $script:UpdateTimer.Interval = [System.TimeSpan]::FromMinutes(30)
+        $script:UpdateTimer.Add_Tick({
+            if ($script:UpdateCheckRunning -eq $true) { return }
+            try { Start-AutoUpdateFlow } catch {
+                Write-RuntimeLog "Zyklischer Auto-Update-Flow Fehler: $($_.Exception.Message)"
+            }
+        })
+        $script:UpdateTimer.Start()
+    } catch {}
+    $window.Add_Closed({
+        try { if ($script:UpdateTimer) { $script:UpdateTimer.Stop() } } catch {}
+    })
 })
 
 # ----------------------------------------------------------------------------
@@ -10696,10 +12627,19 @@ if (-not $script:EncodingOk) {
     Write-RuntimeLog 'ACHTUNG: Skriptdatei ist falsch codiert - Umlaute werden ggf. falsch angezeigt.'
 }
 
+# Beim allerersten Start: Access-Key vorbereiten (Key fuer alle Places)
+try { [void](Get-AccessKey) } catch {}
+
 $script:RobloxStudioPath = Find-RobloxStudio
 if ($script:RobloxStudioPath) {
     Write-RuntimeLog "Roblox Studio gefunden: $($script:RobloxStudioPath.FullName)"
-    if (-not (Test-PortAvailable $script:Port)) {
+    # Doppelstart? Die laufende (alte) Instanz wird zum Schliessen aufgefordert,
+    # dann uebernimmt diese Instanz Port und Tunnel - kein Port-Fehler.
+    $portOk = Request-SingleInstanceHandoff
+    if (-not $portOk) {
+        Add-PendingToast "Der lokale Port $script:Port ist weiterhin belegt und die alte Bridge-Instanz konnte nicht beendet werden. Bitte schließe sie manuell und starte neu." 'Error' 8
+        Write-RuntimeLog "Port $script:Port bleibt belegt - keine Uebernahme moeglich."
+    } elseif (-not (Test-PortAvailable $script:Port)) {
         Add-PendingToast "Der lokale Port $script:Port ist bereits belegt. Schließe die andere Arena-Bridge-Instanz und starte das Programm neu." 'Error' 8
         Write-RuntimeLog "Port $script:Port ist bereits belegt. Es wird kein Server und kein Tunnel gestartet."
     } else {
@@ -10722,12 +12662,26 @@ if ($script:RobloxStudioPath) {
 $timer = [System.Windows.Threading.DispatcherTimer]::new()
 $timer.Interval = [System.TimeSpan]::FromMilliseconds(900)
 $timer.Add_Tick({
+    # Eine andere Instanz will uebernehmen (Doppelstart) -> dieses Fenster schliessen.
+    try {
+        if ($script:Shared['RequestExit'] -eq $true) {
+            $script:Shared['RequestExit'] = $false
+            Write-RuntimeLog 'Handoff: Alte Instanz schliesst sich fuer die neue Instanz.'
+            $window.Close()
+            return
+        }
+    } catch {}
     try {
         Refresh-Ui
     } catch {
         Write-RuntimeLog "Refresh Fehler: $($_.Exception.Message)"
         try { Show-Toast -Message "Fehler abgefangen: $($_.Exception.Message)" -Kind 'Error' -Seconds 6 } catch {}
     }
+    try {
+        if ($SettingsPanel.Visibility -eq 'Visible') {
+            Update-SettingsDynamicInfo
+        }
+    } catch {}
 })
 $timer.Start()
 Refresh-Ui
