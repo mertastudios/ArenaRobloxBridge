@@ -4,6 +4,39 @@ Alle wesentlichen Aenderungen an **Arena Roblox Bridge**. Das Programm
 aktualisiert sich selbst aus diesem Repository (siehe `version.json` - die
 dortige `notes`-Liste erscheint in der Update-Benachrichtigung).
 
+## [3.3.1] - 2026-09-03
+
+### Behoben - das Programm liess sich gar nicht starten
+- **Dreifaches BOM in `ArenaBridge.ps1`:** Am Dateianfang standen drei
+  UTF-8-Byte-Order-Marks hintereinander. PowerShell interpretiert das zweite
+  und dritte BOM als Programmtext, bricht mit einem Parser-Fehler ab und
+  beendet sich sofort. Weil der Start versteckt lief, sah der Nutzer davon
+  nichts: `Start Bridge.vbs` tat scheinbar gar nichts und
+  `OPEN ME TO START.cmd` blitzte nur kurz auf. Es gibt jetzt genau **ein** BOM.
+- **Selbstheilung:** `Start-Bridge.ps1` prueft vor jedem Start den Dateianfang
+  und entfernt ueberzaehlige BOMs automatisch.
+- **Keine stillen Abstuerze mehr:** Jeder Startfehler erscheint als
+  Meldungsfenster im Klartext und landet zusaetzlich in
+  `%LOCALAPPDATA%\ArenaRobloxBridge\startup-error.log`.
+- **`OPEN ME TO START.cmd` bleibt bei Fehlern offen** (`pause`) statt sich
+  nach einer halben Sekunde zu schliessen. Es prueft ausserdem, ob die
+  Programmdateien und PowerShell ueberhaupt vorhanden sind.
+- **Syntaxfehler im Auto-Updater:** Im generierten `apply_update.ps1` stand
+  `param(...)` hinter einer Anweisung - in PowerShell nicht erlaubt. Updates
+  brachen dadurch ab. `param()` steht jetzt an erster Stelle.
+
+### Aufgeraeumter Ordner
+- Im **Hauptordner** liegt nur noch `OPEN ME TO START.cmd` (plus `README.md`).
+  Der Nutzer sieht sofort, was zu tun ist.
+- Alles andere steckt im Unterordner **`bridge`**: `app/`, `docs/`,
+  `version.json`, `CHANGELOG.md`.
+- `Start Bridge.vbs` ist entfallen; der lautlose Start liegt jetzt als
+  `bridge/app/Start-Bridge.vbs` beim Programm und wird vom Starter aufgerufen.
+- Auto-Update, Autostart und Neustart kennen den neuen Aufbau und entfernen
+  alte Startdateien frueherer Versionen.
+- `.gitattributes` erzwingt CRLF-Zeilenenden fuer `.cmd`, `.bat`, `.vbs`
+  und `.ps1`, damit die Startdateien unter Windows zuverlaessig laufen.
+
 ## [3.3.0] - 2026-09-03
 
 ### Fenster & Start

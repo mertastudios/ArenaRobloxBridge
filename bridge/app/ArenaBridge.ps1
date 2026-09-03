@@ -1,11 +1,17 @@
-﻿﻿﻿# ============================================================================
-# Arena Roblox Bridge  -  Version 3.3.0
+﻿# ============================================================================
+# Arena Roblox Bridge  -  Version 3.3.1
 #
-# NEU IN VERSION 3.3.0 (Kurzfassung, Details in CHANGELOG.md):
-#   1.  KEIN KONSOLENFENSTER MEHR: Der Start erfolgt ueber "Start Bridge.vbs"
-#       (Doppelklick nach dem Entpacken). PowerShell laeuft versteckt und
-#       entkoppelt - es gibt nur noch das Programmfenster, und dieses ist vom
-#       Konsolenfenster unabhaengig.
+# NEU IN VERSION 3.3.1 (Kurzfassung, Details in CHANGELOG.md):
+#   0.  START REPARIERT (3.3.1): Diese Datei hatte drei BOMs am Anfang -
+#       PowerShell konnte sie deshalb nicht laden und beendete sich sofort.
+#       Jetzt genau EIN BOM. Bitte diese Datei immer als "UTF-8 mit BOM"
+#       speichern und niemals ein zweites BOM davorsetzen.
+#   1.  KEIN KONSOLENFENSTER MEHR: Gestartet wird nur ueber die Datei
+#       "OPEN ME TO START.cmd" im Hauptordner; sie ruft
+#       bridge\app\Start-Bridge.vbs -> bridge\app\Start-Bridge.ps1 -> diese
+#       Datei auf. PowerShell laeuft versteckt und entkoppelt - es gibt nur
+#       das Programmfenster. Startfehler werden jetzt angezeigt statt
+#       verschluckt (Log: %LOCALAPPDATA%\ArenaRobloxBridge\startup-error.log).
 #   2.  DOPPELSTART OHNE PORT-FEHLER: Startet man das Programm, waehrend es
 #       bereits laeuft, wird die alte Instanz zum Schliessen aufgefordert und
 #       die neue uebernimmt Port und Tunnel.
@@ -270,8 +276,17 @@ if ($script:ScriptPath) {
 } else {
     $script:AppRoot = (Get-Location).Path
 }
-$script:RepoRoot = Split-Path -Parent $script:AppRoot
-$script:LauncherPath = Join-Path $script:RepoRoot 'Arena Roblox Bridge.cmd'
+# Ordner-Aufbau (seit Version 3.3.1):
+#   <Hauptordner>\OPEN ME TO START.cmd      <- das Einzige, was der Nutzer anklickt
+#   <Hauptordner>\bridge\version.json
+#   <Hauptordner>\bridge\app\ArenaBridge.ps1
+# $AppRoot    = ...\bridge\app
+# $BundleRoot = ...\bridge
+# $RepoRoot   = <Hauptordner>
+$script:BundleRoot = Split-Path -Parent $script:AppRoot
+$script:RepoRoot = Split-Path -Parent $script:BundleRoot
+if ([string]::IsNullOrWhiteSpace($script:RepoRoot)) { $script:RepoRoot = $script:BundleRoot }
+$script:LauncherPath = Join-Path $script:RepoRoot 'OPEN ME TO START.cmd'
 $script:AppDataRoot = Join-Path $env:LOCALAPPDATA 'ArenaRobloxBridge'
 $script:Port = 17681
 $script:LocalBaseUrl = "http://127.0.0.1:$script:Port"
@@ -297,7 +312,7 @@ $script:PlaceNames = @{}
 $script:RobloxStudioPath = $null
 $script:PluginInstalled = $false
 $script:LastTunnelMessage = ''
-$script:AppVersion = '3.3.0'
+$script:AppVersion = '3.3.1'
 $script:SettingsPath = Join-Path $script:AppDataRoot 'settings.json'
 $script:GitHubOwner = 'mertastudios'
 $script:GitHubRepoName = 'ArenaRobloxBridge'
@@ -356,7 +371,7 @@ $script:Shared = [hashtable]::Synchronized(@{
     ShotFolder      = $script:ShotFolder
     Port            = $script:Port
     DocsVersion     = '3.3'
-    AppVersion      = '3.3.0'
+    AppVersion      = '3.3.1'
     SettingsPath    = Join-Path $script:AppDataRoot 'settings.json'
     AccessKey       = $null
     RequestExit     = $false
@@ -454,7 +469,7 @@ function Find-RobloxStudio {
 function Get-PluginSource {
 @'
 --[[============================================================================
-  Arena Studio Bridge - Studio Plugin  (Version 3.3.0)
+  Arena Studio Bridge - Studio Plugin  (Version 3.3.1)
 
   Dieses Plugin verbindet ein Roblox-Studio-Fenster mit dem Programm
   "Arena Roblox Bridge" auf dem PC. Jedes Studio-Fenster bekommt eine eigene
@@ -523,7 +538,7 @@ local StudioTestService = nil
 pcall(function() StudioTestService = game:GetService("StudioTestService") end)
 
 local BASE_URL       = "__BASE_URL__"
-local ARENA_VERSION  = "3.3.0"
+local ARENA_VERSION  = "3.3.1"
 local POLL_WAIT      = 12      -- Sekunden Long-Poll (Befehle kommen sofort an)
 local HEARTBEAT_EVERY = 5      -- Sekunden
 local CHUNK_SIZE     = 48000   -- Bytes je Teilstueck einer Antwort
@@ -10084,15 +10099,16 @@ function Set-StartupEnabled {
 # ----------------------------------------------------------------------------
 # STARTER / VERSTECKTER START
 # Das Programm wird grundsaetzlich OHNE sichtbares Konsolenfenster gestartet:
-#   - "Start Bridge.vbs" (Doppelklick nach dem Entpacken) startet PowerShell
-#     mit Fenster-Stil 0 (versteckt). Es erscheint NUR das Programmfenster.
+#   - "bridge\app\Start-Bridge.vbs" startet PowerShell mit Fenster-Stil 0
+#     (versteckt). Es erscheint NUR das Programmfenster. Angeklickt wird vom
+#     Nutzer aber immer "OPEN ME TO START.cmd" im Hauptordner.
 #   - Autostart, Neustart und Auto-Update verwenden dieselbe Funktion.
 # ----------------------------------------------------------------------------
 function Get-StartBridgeVbsPath {
     $candidates = @()
-    if ($script:RepoRoot) { $candidates += Join-Path $script:RepoRoot 'Start Bridge.vbs' }
-    if ($script:AppRoot)  { $candidates += Join-Path $script:AppRoot 'Start Bridge.vbs' }
-    if ($script:RepoRoot) { $candidates += Join-Path $script:RepoRoot 'Arena Roblox Bridge.vbs' }
+    if ($script:AppRoot)    { $candidates += Join-Path $script:AppRoot 'Start-Bridge.vbs' }
+    if ($script:BundleRoot) { $candidates += Join-Path $script:BundleRoot 'app\Start-Bridge.vbs' }
+    if ($script:RepoRoot)   { $candidates += Join-Path $script:RepoRoot 'bridge\app\Start-Bridge.vbs' }
     foreach ($c in $candidates) {
         if ($c -and (Test-Path -LiteralPath $c)) { return $c }
     }
@@ -10105,6 +10121,10 @@ function Get-LaunchCommand {
     $vbs = Get-StartBridgeVbsPath
     if ($vbs) {
         return [pscustomobject]@{ File = 'wscript.exe'; Arguments = "`"$vbs`"" }
+    }
+    $wrapper = Join-Path $script:AppRoot 'Start-Bridge.ps1'
+    if (Test-Path -LiteralPath $wrapper) {
+        return [pscustomobject]@{ File = 'powershell.exe'; Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File `"$wrapper`"" }
     }
     $ps1 = Join-Path $script:AppRoot 'ArenaBridge.ps1'
     if (Test-Path -LiteralPath $ps1) {
@@ -10203,7 +10223,11 @@ function Set-AccessKey {
 function Get-InstalledVersion {
     try {
         $vp = $null
-        if ($script:RepoRoot) {
+        if ($script:BundleRoot) {
+            $c = Join-Path $script:BundleRoot 'version.json'
+            if (Test-Path -LiteralPath $c) { $vp = $c }
+        }
+        if (-not $vp -and $script:RepoRoot) {
             $c = Join-Path $script:RepoRoot 'version.json'
             if (Test-Path -LiteralPath $c) { $vp = $c }
         }
@@ -10392,13 +10416,13 @@ function Write-UpdaterScript {
     # tauscht dann ALLE Programmdateien gegen die gestaffelte Version und
     # startet das Programm neu. Er selbst laeuft ohne sichtbares Fenster.
     $content = @'
-$ErrorActionPreference = 'Stop'
 param(
     [string]$StagedDir,
     [string]$AppRoot,
     [string]$RepoRoot,
     [int]$WaitPid
 )
+$ErrorActionPreference = 'Stop'
 $log = Join-Path (Split-Path -Parent $StagedDir) 'update.log'
 function Write-Log([string]$Text) {
     try { Add-Content -LiteralPath $log -Value ('{0:u} {1}' -f (Get-Date), $Text) -Encoding UTF8 } catch {}
@@ -10416,9 +10440,9 @@ if ($WaitPid -gt 0) {
         }
     }
 }
-# Kopier-Plan: der Ordner 'app' ersetzt den Programm-Ordner ($AppRoot);
-# Dateien im Repo-Stamm (version.json, CHANGELOG, README, Start Bridge.vbs,
-# docs) ersetzen den Stamm ($RepoRoot).
+# Kopier-Plan: 'bridge\app' ersetzt den Programm-Ordner ($AppRoot);
+# 'bridge\version.json', 'bridge\CHANGELOG.md' und 'bridge\docs' ersetzen den
+# Bundle-Ordner; README und "OPEN ME TO START.cmd" ersetzen den Stamm.
 function Copy-ReplaceItem([string]$Src, [string]$Dest) {
     if (-not (Test-Path -LiteralPath $Src)) { return }
     $item = Get-Item -LiteralPath $Src
@@ -10432,7 +10456,8 @@ function Copy-ReplaceItem([string]$Src, [string]$Dest) {
     }
     Write-Log "Kopiert: $Src -> $Dest"
 }
-$appSource = Join-Path $StagedDir 'app'
+$appSource = Join-Path $StagedDir 'bridge\app'
+if (-not (Test-Path -LiteralPath $appSource)) { $appSource = Join-Path $StagedDir 'app' }
 if (Test-Path -LiteralPath $appSource) {
     if (Test-Path -LiteralPath $AppRoot) {
         Get-ChildItem -LiteralPath $AppRoot -Force | Where-Object { $_.Name -ne 'ArenaBridge.ps1' } | ForEach-Object {
@@ -10444,22 +10469,41 @@ if (Test-Path -LiteralPath $appSource) {
         Copy-ReplaceItem $_.FullName (Join-Path $AppRoot $_.Name)
     }
 }
-foreach ($rootFile in @('version.json','CHANGELOG.md','README.md','Start Bridge.vbs','Arena Roblox Bridge.vbs','OPEN ME TO START.cmd')) {
+$bundleSource = Join-Path $StagedDir 'bridge'
+$bundleTarget = Split-Path -Parent $AppRoot
+foreach ($bundleFile in @('version.json','CHANGELOG.md')) {
+    $candidate = Join-Path $bundleSource $bundleFile
+    if (-not (Test-Path -LiteralPath $candidate)) { $candidate = Join-Path $StagedDir $bundleFile }
+    if (Test-Path -LiteralPath $candidate) {
+        Copy-ReplaceItem $candidate (Join-Path $bundleTarget $bundleFile)
+    }
+}
+$docsSource = Join-Path $bundleSource 'docs'
+if (-not (Test-Path -LiteralPath $docsSource)) { $docsSource = Join-Path $StagedDir 'docs' }
+if (Test-Path -LiteralPath $docsSource) {
+    Copy-ReplaceItem $docsSource (Join-Path $bundleTarget 'docs')
+}
+foreach ($rootFile in @('README.md','OPEN ME TO START.cmd')) {
     $candidate = Join-Path $StagedDir $rootFile
     if (Test-Path -LiteralPath $candidate) {
         Copy-ReplaceItem $candidate (Join-Path $RepoRoot $rootFile)
     }
 }
-$docsSource = Join-Path $StagedDir 'docs'
-if (Test-Path -LiteralPath $docsSource) {
-    Copy-ReplaceItem $docsSource (Join-Path $RepoRoot 'docs')
+# Alte Layout-Reste aus Versionen vor 3.3.1 entfernen.
+foreach ($legacy in @('Start Bridge.vbs','Arena Roblox Bridge.vbs','Arena Roblox Bridge.cmd')) {
+    $old = Join-Path $RepoRoot $legacy
+    if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue }
 }
 # Programm neu starten (versteckt)
-$vbs = $null
-if ($RepoRoot) { $vbs = Join-Path $RepoRoot 'Start Bridge.vbs' }
+$vbs = Join-Path $AppRoot 'Start-Bridge.vbs'
+$wrapper = Join-Path $AppRoot 'Start-Bridge.ps1'
 $launcher = $null
-if ($vbs -and (Test-Path -LiteralPath $vbs)) { $launcher = 'wscript.exe'; $args = "`"$vbs`"" }
-else {
+if (Test-Path -LiteralPath $vbs) {
+    $launcher = 'wscript.exe'; $args = "`"$vbs`""
+} elseif (Test-Path -LiteralPath $wrapper) {
+    $launcher = 'powershell.exe'
+    $args = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File `"$wrapper`""
+} else {
     $launcher = 'powershell.exe'
     $args = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File `"$(Join-Path $AppRoot 'ArenaBridge.ps1')`""
 }
@@ -11095,7 +11139,7 @@ $xaml = @'
                         <Border Height="1" Background="{StaticResource Line}" Margin="18,14,18,4"/>
                         <StackPanel x:Name="SettingsCategories"/>
                         <Border Height="1" Background="{StaticResource Line}" Margin="18,8,18,12"/>
-                        <TextBlock x:Name="VersionFooter" Text="Arena Roblox Bridge - Version 3.3.0" Foreground="{StaticResource TextFaint}" FontSize="11" Margin="18,0,18,16"/>
+                        <TextBlock x:Name="VersionFooter" Text="Arena Roblox Bridge - Version 3.3.1" Foreground="{StaticResource TextFaint}" FontSize="11" Margin="18,0,18,16"/>
                     </StackPanel>
                 </ScrollViewer>
             </Border>

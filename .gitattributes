@@ -1,0 +1,5 @@
+# Windows-Starter muessen CRLF behalten, sonst startet cmd.exe sie nicht sauber.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.vbs text eol=crlf
+*.ps1 text eol=crlf
