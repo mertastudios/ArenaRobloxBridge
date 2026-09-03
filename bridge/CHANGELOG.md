@@ -4,6 +4,44 @@ Alle wesentlichen Aenderungen an **Arena Roblox Bridge**. Das Programm
 aktualisiert sich selbst aus diesem Repository (siehe `version.json` - die
 dortige `notes`-Liste erscheint in der Update-Benachrichtigung).
 
+## [3.3.2] - 2026-09-03
+
+### Behoben - der Starter liess sich weiterhin nicht starten
+- **Ungueltige cmd.exe-Syntax in `OPEN ME TO START.cmd`:** Die
+  PowerShell-Pruefung stand als mehrzeiliger `if`-Klammerblock direkt hinter
+  dem Verkettungsoperator `||` (`where ... || if not exist ... ( ... )`).
+  cmd.exe bricht das Skript bei solchen Konstrukten schon beim Parsen ab -
+  deshalb blitzte das Fenster nur kurz auf und schloss sich sofort. Der
+  Starter wurde komplett neu gebaut: nur einfache Zeilen + `goto`-Labels,
+  keine `||`/`&&`-Verkettungen, keine Klammerbloecke hinter Operatoren, kein
+  `setlocal EnableDelayedExpansion`.
+- **Fenster bleibt bei Fehlern offen:** In jedem Fehlerfall kommt jetzt eine
+  Klartext-Meldung + `pause`. Das Fenster schliesst sich NUR, wenn der Start
+  geklappt hat.
+- **Diagnose-Modus:** `OPEN ME TO START.cmd /debug` (oder `-debug`/`debug`)
+  fuehrt alles sichtbar im Vordergrund aus und pausiert am Ende - ideal fuer
+  Screenshots bei Problemen.
+- **Kaputte Meldung in `ArenaBridge.ps1`:** Eine Meldung enthielt ein
+  Apostroph innerhalb eines Apostroph-Textes (`ist 'place' optional`). Der
+  Text war dadurch zerbrochen und haette beim Thema "mehrere Places" einen
+  Fehler geworfen. Jetzt `ist "place" optional`.
+
+### Startkette vereinfacht (kein VBS mehr)
+- Der Zwischenschritt ueber `wscript.exe`/`bridge/app/Start-Bridge.vbs` ist
+  entfallen. `OPEN ME TO START.cmd` startet PowerShell jetzt direkt und
+  versteckt: `OPEN ME TO START.cmd` -> `bridge/app/Start-Bridge.ps1` ->
+  `bridge/app/ArenaBridge.ps1`.
+- Grund: Vom Internet geladene VBS-Dateien (Mark of the Web) werden von
+  Windows/SmartScreen leicht blockiert - ein stiller Start-Abbrecher. Ohne
+  VBS entfaellt dieses Risiko.
+- Autostart, Neustart und Auto-Update verwenden denselben direkten Weg
+  (PowerShell versteckt, via `Get-LaunchCommand`).
+
+### Dokumentation
+- README erklaert jetzt das Entsperren einer GitHub-ZIP (Rechtsklick ->
+  Eigenschaften -> "Zulassen") vor dem Entpacken sowie den neuen
+  `/debug`-Modus.
+
 ## [3.3.1] - 2026-09-03
 
 ### Behoben - das Programm liess sich gar nicht starten

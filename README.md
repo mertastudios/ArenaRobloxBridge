@@ -20,19 +20,29 @@ Skripte schreiben und prüfen, Play-Tests starten, GUI bedienen, Fehler lesen -
 
 1. **ZIP herunterladen:** `Code ▾ → Download ZIP` (oder
    [direkt](https://github.com/mertastudios/ArenaRobloxBridge/archive/refs/heads/main.zip)).
-2. **Entpacken** in einen beliebigen Ordner (z. B. `C:\ArenaRobloxBridge`).
-3. **Doppelklick auf `OPEN ME TO START.cmd`** - das ist die einzige Datei im
+2. **ZIP entsperren (wichtig!):** Rechtsklick auf die heruntergeladene ZIP →
+   **Eigenschaften** → unten den Haken bei **„Zulassen“** (engl. „Unblock“)
+   setzen → OK. Erst **danach** entpacken. Sonst können Windows/SmartScreen
+   Skriptdateien aus dem Internet stumm blockieren.
+3. **Entpacken** in einen beliebigen Ordner (z. B. `C:\ArenaRobloxBridge`).
+4. **Doppelklick auf `OPEN ME TO START.cmd`** - das ist die einzige Datei im
    Hauptordner und die einzige, die du je anklicken musst. Alles andere liegt
    im Unterordner `bridge`. Es öffnet sich nur das Programmfenster.
    *Klappt der Start nicht, bleibt das Fenster offen und nennt den Grund.*
-4. Roblox Studio starten und ein Place öffnen. Das Plugin installiert sich
+5. Roblox Studio starten und ein Place öffnen. Das Plugin installiert sich
    automatisch, und das Place erscheint als Zeile im Programmfenster.
-5. Den Zugangs-Prompt kopieren (Zeilen-Menü „…“ oder
+6. Den Zugangs-Prompt kopieren (Zeilen-Menü „…“ oder
    Einstellungen → „Key für alle Places“) und dem KI-Agenten geben.
 
 > Wird das Programm ein zweites Mal gestartet, während es schon läuft,
 > schließt sich die alte Instanz automatisch und die neue übernimmt - es gibt
 > keinen Port-Fehler.
+
+> **Fehlersuche:** Startet das Programm nicht und du willst sehen, was
+> passiert, öffne eine Eingabeaufforderung im Programmordner und tippe:
+> `"OPEN ME TO START.cmd" /debug` - dann läuft alles sichtbar im Vordergrund
+> und das Fenster bleibt am Ende offen. Davon kannst du einen Screenshot
+> machen.
 
 ## Ordner-Aufbau
 
@@ -47,8 +57,7 @@ ArenaRobloxBridge\
     ├── CHANGELOG.md
     ├── app\
     │   ├── ArenaBridge.ps1     (das Programm)
-    │   ├── Start-Bridge.ps1    (Start-Wrapper mit Fehlermeldungen)
-    │   └── Start-Bridge.vbs    (startet lautlos, ohne Konsolenfenster)
+    │   └── Start-Bridge.ps1    (Start-Wrapper mit Fehlermeldungen)
     └── docs\
         └── TOOLS.md
 ```
@@ -156,11 +165,17 @@ Bearer …`):
 - **Umlaute erscheinen falsch:** Die Datei `bridge/app/ArenaBridge.ps1` muss
   „UTF-8 mit **genau einem** BOM“ sein. Das Programm repariert eine fehlende
   BOM selbst (Marker `äöüßÄÖÜ`), der Starter entfernt zusätzlich doppelte BOMs.
-- **Beim Doppelklick passiert nichts:** In Version 3.3.0 standen drei BOMs
-  hintereinander in `ArenaBridge.ps1` - PowerShell konnte die Datei dadurch
-  nicht laden und beendete sich sofort. Ab 3.3.1 ist das behoben; sollte doch
-  einmal etwas fehlschlagen, zeigt `OPEN ME TO START.cmd` den Grund an und
-  schreibt ihn nach `%LOCALAPPDATA%\ArenaRobloxBridge\startup-error.log`.
+- **Beim Doppelklick passiert nichts (Fenster blitzt nur kurz auf):** Bis
+  3.3.1 gab es dafür zwei Ursachen: erst ein dreifaches BOM in
+  `ArenaBridge.ps1` (3.3.0), dann ein unerlaubter cmd.exe-Befehl im Starter
+  (3.3.1). Beides ist ab 3.3.2 behoben. Sollte trotzdem etwas fehlschlagen,
+  zeigt `OPEN ME TO START.cmd` den Grund an und schreibt ihn nach
+  `%LOCALAPPDATA%\ArenaRobloxBridge\startup-error.log`. Für die Fehlersuche:
+  `"OPEN ME TO START.cmd" /debug` startet alles sichtbar im Vordergrund.
+- **„Diese Datei stammt von einem anderen Computer“:** Rechtsklick auf die
+  ZIP → Eigenschaften → **„Zulassen“** („Unblock“) setzen, **bevor** du sie
+  entpackst. Entpackte VBS-/PowerShell-Dateien aus dem Internet können sonst
+  von Windows/SmartScreen blockiert werden.
 - **Kein Play-Start:** Studio fokussieren, Dialoge schließen; `play_start`
   Antwort enthält `diagnostics` und `recentErrors`.
 
@@ -168,9 +183,9 @@ Bearer …`):
 
 - Alles Wesentliche steckt in **einer** Datei: `bridge/app/ArenaBridge.ps1`
   (Programm + eingebettetes Studio-Plugin).
-- Startkette: `OPEN ME TO START.cmd` → `bridge/app/Start-Bridge.vbs`
-  (lautlos) → `bridge/app/Start-Bridge.ps1` (prüft Voraussetzungen, meldet
-  Fehler im Klartext) → `bridge/app/ArenaBridge.ps1`.
+- Startkette: `OPEN ME TO START.cmd` → `bridge/app/Start-Bridge.ps1` (prüft
+  Voraussetzungen, meldet Fehler im Klartext) → `bridge/app/ArenaBridge.ps1`.
+  PowerShell wird vom Starter direkt und versteckt gestartet (kein wscript).
 - `bridge/version.json` + `bridge/CHANGELOG.md` steuern das Auto-Update.
 - Neue Versionen: Code ändern, `version` in `bridge/app/ArenaBridge.ps1` **und**
   `bridge/version.json` erhöhen, `bridge/CHANGELOG.md` ergänzen, committen und
